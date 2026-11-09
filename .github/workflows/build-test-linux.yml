@@ -147,7 +147,15 @@ jobs:
         shell: bash
         run: |
           flutter_root="$(dirname "$(dirname "$(command -v flutter)")")"
-          git -C "$flutter_root" apply "$GITHUB_WORKSPACE/client/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          patch_file="$GITHUB_WORKSPACE/client/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          if git -C "$flutter_root" apply --check "$patch_file"; then
+            git -C "$flutter_root" apply "$patch_file"
+          elif git -C "$flutter_root" apply --reverse --check "$patch_file"; then
+            echo "Pinned Flutter workaround already present in restored SDK cache"
+          else
+            echo "Flutter SDK does not match the expected workaround state" >&2
+            exit 1
+          fi
 
       - name: Install Rust 1.75 for native Linux build
         uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1.85.0
