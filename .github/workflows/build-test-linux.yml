@@ -6,6 +6,10 @@ on:
       - '.github/workflows/build-test-linux.yml'
   workflow_dispatch:
 
+concurrency:
+  group: rustdesk-test-linux-${{ github.ref }}
+  cancel-in-progress: true
+
 permissions:
   contents: read
 
@@ -112,6 +116,13 @@ jobs:
       - name: Install native Linux dependencies from upstream build job
         run: |
           sudo apt-get update -y
+          # Ubuntu runner LLVM dev package conflicts with GStreamer's libunwind-dev.
+          # This is an ephemeral build runner, never an end-user computer.
+          mapfile -t task_unwind_packages < <(dpkg-query -W -f='${Package} ${Status}\n' 'libunwind-*-dev' 2>/dev/null | awk '$NF == "installed" {print $1}' || true)
+          if ((${#task_unwind_packages[@]})); then
+            sudo apt-get remove -y "${task_unwind_packages[@]}"
+          fi
+          sudo apt-get install -y libunwind-dev
           sudo apt-get install -y \
             build-essential clang cmake curl gcc g++ \
             libasound2-dev libayatana-appindicator3-dev libclang-dev \
