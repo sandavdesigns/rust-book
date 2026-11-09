@@ -1,6 +1,6 @@
 # Executed validation and remaining limits
 
-2026-11-09, isolated development test only.
+2026-11-09/10, isolated development test only.
 
 ## Source and protocol
 
@@ -23,9 +23,9 @@
 
 ## Note roundtrip correction
 
-The GUI test found that notes were dropped both by the legacy API and by the client's legacy serializer/changeNote implementation. Server schema migration 4 adds a bounded UTF-8 note column additively and preserves old-client writes that omit notes. Per-user isolation, existing-v3 migration, idempotence, 300/301 Unicode-character bounds and invalid UTF-8 were tested. The client companion patch adds opt-in legacy note serialization and implements its missing update operation. Final rebuilt-GUI note roundtrip is pending and must not be inferred from these protocol tests.
+The GUI test found that notes were dropped both by the legacy API and by the client's legacy serializer/changeNote implementation. Server schema migration 4 adds a bounded UTF-8 note column additively and preserves old-client writes that omit notes. Per-user isolation, existing-v3 migration, idempotence, 300/301 Unicode-character bounds and invalid UTF-8 were tested. The client companion patch adds opt-in legacy note serialization and implements its missing update operation. Final macOS arm64 build 42719302637 and Linux x64 build 42719302669 succeeded at be5730eed871d246b166a0f1fa48da06ae3b9888. Both ZIP digests matched GitHub artifact metadata; architecture and archive paths were checked. The final Mac archive passed deep/strict signature verification both in CI and after extraction, declared the isolated rustdesklab URL scheme, and started successfully without local resealing. In that final GUI, a UTF-8 note was saved, its database value independently read, and the same note displayed after logout/login. The final Linux bundle was not rerun on the endpoint; the complete relay GUI test above used the earlier full builds with the same strict Secure-TCP patch.
 
-Server-side note, protocol-limit and security-control suites passed in the pinned PHP 8.4.27 container, including sixteen concurrent rate-limit workers. A static PHP-7.3 compatibility guard passed locally; that is not a PHP-7.3 runtime claim.
+Complete GitHub PHP CI also passed on PHP 8.2, 8.3, 8.4 and 8.5 at d8c724f1cd23a0a9a20f4cf82084a81b4a80c421. Server-side note, protocol-limit and security-control suites passed in the pinned PHP 8.4.27 container, including sixteen concurrent rate-limit workers. A static PHP-7.3 compatibility guard passed locally; that is not a PHP-7.3 runtime claim.
 
 ## Boundaries
 

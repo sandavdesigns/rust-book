@@ -24,7 +24,7 @@ Der Workflow checkt den öffentlichen RustDesk-Commit
 `23e5bb471a040d62f0a6ad52591fb30784265b73` mit Submodulen aus und verifiziert:
 
 - `libs/hbb_common` auf `fae47e024dd83cef6aaecde0aa7d11731df11649`;
-- SHA-256 der vier bearbeiteten Upstream-Dateien vor jeder Änderung;
+- SHA-256 der acht geprüften Upstream-Dateien vor jeder Änderung;
 - den SHA-256 von `src/client.rs` nach `client-1.5.1-strict.patch`.
 
 Bei einer abweichenden Upstream-Datei bricht `prepare-test-client.py` ab, statt einen
@@ -42,6 +42,11 @@ vor:
   `RustDeskLab.app`.
 - macOS `PRODUCT_BUNDLE_IDENTIFIER`: `com.carriez.flutterHbb` beziehungsweise
   `com.carriez.rustdesk` → `de.sandav.rustdesklab`.
+
+- macOS-URL-Schema: `rustdesklab://` statt `rustdesk://`, damit der Testbuild
+  nicht den URL-Namen der produktiven App beansprucht.
+- `client-1.5.1-address-book-notes.patch` ergänzt ausschließlich die alte
+  Adressbuchschnittstelle um Notizänderung und optionale Notizserialisierung.
 
 Die exakten ursprünglichen Zeichenfolgen und ihre Anzahl werden vor dem Ersetzen
 geprüft. Der Workflow verwendet den offiziellen RustDesk-1.5.1-Flutterpfad: separate

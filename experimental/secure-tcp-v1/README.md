@@ -1,6 +1,6 @@
 # Experimental hbbs v1 secure TCP companion patch
 
-Status: isolated source candidate, **not a production recommendation**. No running service, configuration, server identity, or installed client was modified. This component is separate from the address-book API application. It repairs the missing rendezvous exchange for modern clients; it does not add account authorization to OSS hbbs. The safe candidate is the **paired server v1 patch plus strict client patch**, subject to the remaining validation gates. An unmodified official 1.5.1 client is not approved for this candidate.
+Status: isolated source candidate, **not a production recommendation**. Production services, configuration, server identities and installed clients were unchanged; separate lab components were built and exercised. This component is separate from the address-book API application. It repairs the missing rendezvous exchange for modern clients; it does not add account authorization to OSS hbbs. The safe candidate is the **paired server v1 patch plus strict client patch**, subject to the remaining validation gates. An unmodified official 1.5.1 client is not approved for this candidate.
 
 ## Exact source boundary
 
@@ -30,7 +30,7 @@ The separately supplied `client-1.5.1-strict.patch` uses the already present `se
 
 This client patch relies on the paired v1 server. The existing strict helper still accepts a genuine v0 exchange from a different server and skips its own crypto when the application is configured for WebSocket; this work does not certify v0 servers, unprotected ws://, arbitrary client transports, or all RustDesk crypto paths. Use a verified TLS-protected WSS configuration if choosing that separate transport.
 
-Before considering a deployment, build the client using the pinned upstream platform/Flutter workflow and test against fake servers sending EOF, garbage, a non-KeyExchange protobuf, invalid signatures and stripped version parameters: no token/switch code may leave the socket. Test valid paired v1, wrong/missing server keys, direct and forced-relay sessions, and tokenless regression. Those client build/runtime tests remain outstanding.
+Before considering a deployment, build the client using the pinned upstream platform/Flutter workflow and test against fake servers sending EOF, garbage, a non-KeyExchange protobuf, invalid signatures and stripped version parameters: no token/switch code may leave the socket. Test valid paired v1, wrong/missing server keys, direct and forced-relay sessions, and tokenless regression. The actual-client-code negative matrix and signed-in forced-relay GUI test have since passed in the isolated lab; see VALIDATION.md for coverage and remaining gates, including direct-path and customer endpoint acceptance.
 
 ## Alternatives reviewed
 
@@ -55,7 +55,7 @@ The fetch script creates `upstream/source/` with complete pinned server/submodul
 
 To prepare source independently, run `fetch-and-apply.sh` in a fresh directory. It fetches only the two pinned commits and applies `server-v1.patch` and `hbb-proto-v1.patch`. Review downloaded sources and record archive checksums for redistribution. `check_vectors.py` independently verifies official KDF vectors using Python's hashlib.
 
-Executed: the final Linux debug build and all eight hbbs library tests passed (seven new Secure-TCP tests and the existing database test). Client compilation and paired desktop testing remain pending.
+Executed: the final Linux debug build and all eight hbbs library tests passed (seven new Secure-TCP tests and the existing database test). Full Mac/Linux GUI compilation and paired signed-in relay desktop/input testing also passed in the separate lab; see VALIDATION.md for exact runs and limitations.
 
 Implemented Rust checks: official KDF vectors and distinct direction ciphertexts; bidirectional decryption; replay, reflection and tampering failure; short-frame rejection; nonce exhaustion; plaintext token/oversize rejection (all three token message types, empty-token positive cases, and real TCP handshake rejection); TCP coalesced handshake plus two encrypted requests; independent moved-sink responses with preserved counters; v0/malformed exchange rejection; tokenless first-message preservation. These tests do not replace a real RustDesk 1.5.1 end-to-end connection test.
 

@@ -20,6 +20,9 @@ server replacement was performed during development.
   Existing files must belong to the PHP service user. This does **not** encrypt
   the database. Use private directories and encrypted backups/volumes; legacy
   peer hashes are credential-equivalent. On Windows configure service-user ACLs.
+- Legacy peer notes are bounded to 300 valid UTF-8 Unicode characters. Migration 4
+  adds their column without removing existing data. Old clients omitting notes
+  preserve stored values; explicit empty notes clear them.
 - Schema migration 3 adds independent login indexes and accommodates older
   databases without an audit table. Run `php scripts/migrate.php` before use.
 
@@ -33,6 +36,7 @@ The following tests are part of CI and can be run locally on supported PHP:
 sh tests/php73_static_guard.sh
 php tests/security_controls.php
 php tests/address_book_limits.php
+php tests/address_book_notes.php
 bash tests/curl_api_smoke.sh
 bash tests/curl_security.sh
 ```
@@ -46,7 +50,7 @@ trusted-proxy parsing, HTTP rejection, chunked/declared request limits and
 existing login/save/logout behavior. The static PHP 7.3 guard is not a real
 PHP 7.3 compatibility test; use a currently supported PHP branch in deployment.
 
-## Remote-control blocker remains separate
+## Remote-control compatibility requires paired patches
 
 A real official macOS RustDesk 1.5.1 client can log into upstream Rust-Book and
 show an account's centrally stored peers. With official OSS-hbbs 1.1.16, the
@@ -65,13 +69,21 @@ separate from the MIT PHP application and carry their own AGPL license. They
 adapt the server to the official client's v1 direction-key exchange and make
 all identified client token paths require authenticated encryption. A server
 patch alone does not remove the lax handshake behavior of an unmodified client.
-The Linux server debug build and all eight hbbs library tests passed. The
-client has not been compiled or tested against fake servers or an actual
-paired desktop session. No custom binary is bundled or silently installed. See their validation log
-for build and runtime evidence; pending checks remain explicit.
+The Linux server debug build and all eight hbbs library tests passed. Both full
+Mac arm64 and Linux x64 GUI clients were built and run separately. A harness
+using actual pinned client functions passed its 24-case no-secret-emission
+matrix and both real-hbbs integrations. Video, keyboard digits, mouse delivery,
+reconnection, account login/re-login and signed-in address-book connection were
+observed against an own device through the isolated relay. See
+[executed validation](../experimental/secure-tcp-v1/VALIDATION.md) for exact
+builds and evidence; no production component was replaced.
 
-Before any customer rollout: compile and verify both patched components,
-exercise negative downgrade/tampering tests, and test signed-in desktop/input,
-relay fallback, multiple actual clients, restart persistence and unattended
-endpoint reboot. This fork is not a paid RustDesk Pro replacement: address-book
-login does not centrally grant or revoke the endpoint's remote-access password.
+The Linux GUI test required a temporary nested X11 session because the normal
+Wayland session lacked a RemoteDesktop portal capability. The temporary session
+was closed after testing. This is not evidence of unattended Wayland access.
+
+Before any customer rollout, test Windows service/reboot persistence, outside-
+network behavior, normal unattended endpoints and production packaging/signing.
+This fork is not a paid RustDesk Pro replacement: address-book login does not
+centrally grant or revoke the endpoint's remote-access password. The draft is
+not merged and remains an isolated development experiment.
