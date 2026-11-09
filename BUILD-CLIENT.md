@@ -48,3 +48,16 @@ Die exakten ursprünglichen Zeichenfolgen und ihre Anzahl werden vor dem Ersetze
 geprüft. Der Workflow verwendet den offiziellen RustDesk-1.5.1-Flutterpfad: separate
 Bridge-Generierung mit Flutter 3.22.3 und `flutter_rust_bridge_codegen` 1.80.1,
 anschließend macOS-arm64-Build mit Rust 1.81, Flutter 3.24.5 und gepinntem vcpkg.
+
+## Linux-x64-Testbundle
+
+`.github/workflows/build-test-linux.yml` ist ein getrennt auslösbarer, nativer
+Ubuntu-22.04-x64-Build. Er erzeugt kein Deb, RPM oder Installationsskript, sondern
+nur `RustDeskLab-linux-x64-bundle.tar.gz` aus
+`flutter/build/linux/x64/release/bundle`.
+
+Auf dem Testsystem das Archiv in einen beschreibbaren, separaten Ordner entpacken
+und `bundle/rustdesk` von dort starten. Nicht als Root installieren und kein
+Paketmanagement verwenden. Der vorbereitende Strict-Patch und `APP_NAME=RustDeskLab`
+werden auch für diesen Build geprüft und angewendet; die zusätzlichen macOS-Metadaten
+in derselben isolierten Quellkopie haben auf das Linux-Bundle keine Wirkung.
