@@ -15,6 +15,7 @@ function validBook()
                 'hostname' => 'host',
                 'platform' => 'linux',
                 'alias' => 'Desktop',
+                'note' => 'Desk note',
                 'tags' => array('Home'),
                 'hash' => 'hash'
             )
@@ -63,6 +64,7 @@ $atBounds['peers'][0]['username'] = str_repeat('u', RustDeskProtocol::MAX_PEER_F
 $atBounds['peers'][0]['hostname'] = str_repeat('h', RustDeskProtocol::MAX_PEER_FIELD_LENGTH);
 $atBounds['peers'][0]['platform'] = str_repeat('p', RustDeskProtocol::MAX_PLATFORM_LENGTH);
 $atBounds['peers'][0]['alias'] = str_repeat('a', RustDeskProtocol::MAX_PEER_FIELD_LENGTH);
+$atBounds['peers'][0]['note'] = str_repeat('n', RustDeskProtocol::MAX_PEER_NOTE_LENGTH);
 $atBounds['peers'][0]['hash'] = str_repeat('x', RustDeskProtocol::MAX_PEER_HASH_LENGTH);
 $atBounds['peers'][0]['tags'] = array_slice($atBounds['tags'], 0, RustDeskProtocol::MAX_TAGS_PER_PEER);
 $atBounds['tag_colors'] = '{}';
@@ -96,6 +98,22 @@ foreach ($oversizedPeerFields as $field => $limit) {
     $tooLongField['peers'][0][$field] = str_repeat('x', $limit + 1);
     assertRejected($tooLongField, 'oversized peer ' . $field);
 }
+
+$tooLongNote = validBook();
+$tooLongNote['peers'][0]['note'] = str_repeat('n', RustDeskProtocol::MAX_PEER_NOTE_LENGTH + 1);
+assertRejected($tooLongNote, 'oversized peer note');
+
+$unicodeNoteAtLimit = validBook();
+$unicodeNoteAtLimit['peers'][0]['note'] = str_repeat('ä', RustDeskProtocol::MAX_PEER_NOTE_LENGTH);
+assertAccepted($unicodeNoteAtLimit, '300 Unicode note characters');
+
+$unicodeNoteTooLong = validBook();
+$unicodeNoteTooLong['peers'][0]['note'] = str_repeat('ä', RustDeskProtocol::MAX_PEER_NOTE_LENGTH + 1);
+assertRejected($unicodeNoteTooLong, '301 Unicode note characters');
+
+$invalidUtf8Note = validBook();
+$invalidUtf8Note['peers'][0]['note'] = "\xC3\x28";
+assertRejected($invalidUtf8Note, 'invalid UTF-8 note');
 
 $tooLongTag = validBook();
 $tooLongTag['tags'][0] = str_repeat('t', RustDeskProtocol::MAX_TAG_LENGTH + 1);

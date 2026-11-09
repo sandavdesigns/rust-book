@@ -43,4 +43,5 @@ jobs:
         run: |
           php tests/security_controls.php
           php tests/address_book_limits.php
+          php tests/address_book_notes.php
           bash tests/curl_security.sh

@@ -1,7 +1,7 @@
 # Isolierter RustDesk-Testclient
 
-Dieser Workflow baut ausschließlich einen unsignierten Testclient. Er veröffentlicht
-nichts, verwendet keine Secrets und verändert weder den installierten RustDesk-Client
+Dieser Workflow baut ausschließlich einen lokal signierten Entwicklungsclient. Er veröffentlicht
+keine Releases oder Pakete, verwendet keine Secrets und verändert weder den installierten RustDesk-Client
 noch den lokalen Referenzquellbaum.
 
 ## Auslösen und Artefakt
@@ -16,8 +16,7 @@ Entpacke es in einen separaten Ordner, zum Beispiel `~/Applications/RustDeskLab.
 und starte nur diese Kopie. Nicht nach `/Applications/RustDesk.app` kopieren und die
 Produktiv-App nicht ersetzen.
 
-Das Bundle ist absichtlich nicht signiert oder notarisiert. macOS kann den ersten
-Start deshalb blockieren; die lokale Sicherheitsentscheidung liegt beim Tester.
+Das Bundle besitzt nur eine lokale Ad-hoc-Signatur, keine Apple Developer ID und keine Notarisierung. Die dokumentierte Ausnahme für die Bibliotheksprüfung gilt ausschließlich für diese freigegebene Test-App. Sie ist keine Kundenfreigabe; Systemschutz und Gatekeeper bleiben unverändert.
 
 ## Reproduzierbarer Quellenstand
 
@@ -61,3 +60,9 @@ und `bundle/rustdesk` von dort starten. Nicht als Root installieren und kein
 Paketmanagement verwenden. Der vorbereitende Strict-Patch und `APP_NAME=RustDeskLab`
 werden auch für diesen Build geprüft und angewendet; die zusätzlichen macOS-Metadaten
 in derselben isolierten Quellkopie haben auf das Linux-Bundle keine Wirkung.
+
+## Local macOS lab packaging check (2026-11-09)
+
+The first successful arm64 build (run 42703740829) copied `Contents/MacOS/service` after Xcode had sealed the app. Its original archive therefore requires resealing before use. The packaging workflow now reseals the app and embedded binaries with ad-hoc signatures, adds `com.apple.security.cs.disable-library-validation` only for this explicitly approved local development build (there is no Apple Team ID), and runs `codesign --verify --deep --strict` before archiving. This is still an unnotarized local development build with no Apple Developer ID, unsuitable as a customer release; it does not bypass Gatekeeper or grant screen/input permissions.
+
+The downloaded first build was extracted to a task-owned directory outside a file-provider-managed Documents folder, resealed with its existing identifier and runtime flags preserved and with the explicitly approved development-only library-validation exception, and passed the same deep/strict verification. No executable code was changed by this packaging correction. Archive digest and original build digest are recorded separately.

@@ -6,6 +6,7 @@ on:
       - '.github/workflows/build-test-client.yml'
       - 'experimental/secure-tcp-v1/prepare-test-client.py'
       - 'experimental/secure-tcp-v1/client-1.5.1-strict.patch'
+      - 'experimental/secure-tcp-v1/client-1.5.1-address-book-notes.patch'
   workflow_dispatch:
 
 concurrency:
@@ -107,7 +108,8 @@ jobs:
         run: |
           python3 experimental/secure-tcp-v1/prepare-test-client.py \
             --source client \
-            --strict-patch experimental/secure-tcp-v1/client-1.5.1-strict.patch
+            --strict-patch experimental/secure-tcp-v1/client-1.5.1-strict.patch \
+            --notes-patch experimental/secure-tcp-v1/client-1.5.1-address-book-notes.patch
 
       - name: Restore generated bridge
         uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4.3.0
@@ -177,7 +179,15 @@ jobs:
 
       - name: Package unsigned app bundle without dereferencing links
         working-directory: client/flutter/build/macos/Build/Products/Release
-        run: tar -czf "$GITHUB_WORKSPACE/RustDeskLab-macos-arm64.tar.gz" RustDeskLab.app
+        run: |
+          # build.py adds the service binary after Xcode signs the app. Reseal
+          # this local-only ad-hoc signature; no Developer ID or notarization.
+          # Ad-hoc testing has no Apple Team ID. This opt-out is limited to
+          # the explicitly approved development app; never a production build.
+          /usr/libexec/PlistBuddy -c 'Add :com.apple.security.cs.disable-library-validation bool true' "$GITHUB_WORKSPACE/client/flutter/macos/Runner/Release.entitlements"
+          codesign --force --deep --sign - --preserve-metadata=identifier,flags,runtime --entitlements "$GITHUB_WORKSPACE/client/flutter/macos/Runner/Release.entitlements" RustDeskLab.app
+          codesign --verify --deep --strict RustDeskLab.app
+          tar -czf "$GITHUB_WORKSPACE/RustDeskLab-macos-arm64.tar.gz" RustDeskLab.app
 
       - name: Upload isolated unsigned macOS app
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2

@@ -43,10 +43,11 @@ try {
     $migrations = new Migrations($db, $config);
     $migrations->migrate();
     check($migrations->migrate() === array(), 'migration idempotent');
-    check($migrations->currentVersion() === 3, 'schema upgraded');
+    check($migrations->currentVersion() === 4, 'schema upgraded');
     $db->pdo()->exec('DELETE FROM schema_migrations WHERE version = 3');
+    $db->pdo()->exec('DELETE FROM schema_migrations WHERE version = 4');
     $db->pdo()->exec('DROP TABLE login_attempts');
-    check($migrations->migrate() === array(3), 'legacy v2 database gains the login table');
+    check($migrations->migrate() === array(3, 4), 'legacy v2 database gains current schema additions');
     check($db->tableExists('login_attempts'), 'legacy audit table created');
     if (DIRECTORY_SEPARATOR === '/') {
         clearstatcache();

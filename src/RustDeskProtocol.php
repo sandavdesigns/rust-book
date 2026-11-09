@@ -9,6 +9,9 @@ final class RustDeskProtocol
     const MAX_ID_LENGTH = 128;
     const MAX_TAG_LENGTH = 128;
     const MAX_PEER_FIELD_LENGTH = 512;
+    // RustDesk's client limits peer notes to 300 Unicode characters.
+    const MAX_PEER_NOTE_LENGTH = 300;
+    const MAX_PEER_NOTE_BYTES = 1200;
     const MAX_PLATFORM_LENGTH = 128;
     const MAX_PEER_HASH_LENGTH = 4096;
     const MAX_TAG_COLOR_LENGTH = 32;
@@ -121,6 +124,10 @@ final class RustDeskProtocol
             'hostname' => isset($peer['hostname']) ? self::boundedStringValue($peer['hostname'], self::MAX_PEER_FIELD_LENGTH) : '',
             'platform' => isset($peer['platform']) ? self::boundedStringValue($peer['platform'], self::MAX_PLATFORM_LENGTH) : '',
             'alias' => isset($peer['alias']) ? self::boundedStringValue($peer['alias'], self::MAX_PEER_FIELD_LENGTH) : '',
+            // Keep presence separate from value so old clients that do not know
+            // this field do not erase a note written by a newer client.
+            'note' => isset($peer['note']) ? self::boundedUnicodeStringValue($peer['note'], self::MAX_PEER_NOTE_LENGTH, self::MAX_PEER_NOTE_BYTES) : '',
+            'note_provided' => array_key_exists('note', $peer),
             'tags' => $peerTags,
             'hash' => isset($peer['hash']) ? self::boundedStringValue($peer['hash'], self::MAX_PEER_HASH_LENGTH) : ''
         );
@@ -154,6 +161,22 @@ final class RustDeskProtocol
     {
         $string = self::stringValue($value);
         if (strlen($string) > $maxLength) {
+            throw new AddressBookValidationException('Invalid address book data');
+        }
+
+        return $string;
+    }
+
+    private static function boundedUnicodeStringValue($value, $maxCharacters, $maxBytes)
+    {
+        $string = self::stringValue($value);
+        if (strlen($string) > $maxBytes) {
+            throw new AddressBookValidationException('Invalid address book data');
+        }
+
+        $matches = array();
+        $count = preg_match_all('/./us', $string, $matches);
+        if ($count === false || $count > $maxCharacters) {
             throw new AddressBookValidationException('Invalid address book data');
         }
 
