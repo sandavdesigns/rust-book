@@ -4,6 +4,9 @@ on:
   push:
   pull_request:
 
+permissions:
+  contents: read
+
 jobs:
   php:
     runs-on: ubuntu-latest
@@ -14,6 +17,7 @@ jobs:
           - '8.2'
           - '8.3'
           - '8.4'
+          - '8.5'
 
     steps:
       - name: Checkout
@@ -34,3 +38,9 @@ jobs:
 
       - name: API smoke test
         run: bash tests/curl_api_smoke.sh
+
+      - name: Security control and protocol boundary tests
+        run: |
+          php tests/security_controls.php
+          php tests/address_book_limits.php
+          bash tests/curl_security.sh

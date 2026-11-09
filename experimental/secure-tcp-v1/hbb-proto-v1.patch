@@ -1,0 +1,16 @@
+--- a/protos/rendezvous.proto
++++ b/protos/rendezvous.proto
+@@ -164,6 +164,13 @@
+ 
+ message KeyExchange {
+   repeated bytes keys = 1; 
++  uint32 version = 2;
++  bytes signed_params = 3;
++}
++
++message KxParams {
++  bytes pk = 1;
++  uint32 version = 2;
+ }
+ 
+ message HealthCheck {

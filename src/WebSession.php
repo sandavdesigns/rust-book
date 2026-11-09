@@ -18,7 +18,7 @@ final class WebSession
             return;
         }
 
-        $secure = $this->httpsEnabled();
+        $secure = HttpSecurity::isHttps($this->config);
         session_name('RUSTDESKAPIADMIN');
         if (PHP_VERSION_ID >= 70300) {
             session_set_cookie_params(array(
@@ -98,8 +98,4 @@ final class WebSession
         return $this->settings->getInt('admin_session_absolute_seconds', 43200, 600, 604800);
     }
 
-    private function httpsEnabled()
-    {
-        return isset($_SERVER['HTTPS']) && strtolower((string) $_SERVER['HTTPS']) !== 'off' && (string) $_SERVER['HTTPS'] !== '';
-    }
 }

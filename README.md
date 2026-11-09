@@ -1,5 +1,11 @@
 # Rust-Book
 
+This is the SandavDesigns maintenance fork. It adds HTTPS enforcement, explicit
+proxy trust, atomic account/IP login throttling, request/address-book limits,
+and regression tests. These changes do not repair the separate OSS-hbbs
+Secure-TCP incompatibility. **Account login is not proof that remote access
+works.** See [fork validation and remaining limitations](docs/FORK-STATUS.md).
+
 Looking for a free self-hosted address book for RustDesk OSS?
 
 Rust-Book provides account login and a shared legacy address book
@@ -11,7 +17,7 @@ It lets an unmodified RustDesk client log in to a custom API server and synchron
 
 ## Status
 
-Current public version: `0.1.0`
+Fork development version: `0.1.1-dev` (upstream base: `0.1.0`).
 
 The compatibility surface has been tested with the official unmodified RustDesk Windows client `1.4.9` in one real legacy deployment. Other RustDesk versions may behave differently because this API is not a stable public upstream contract.
 
@@ -70,13 +76,13 @@ SQLite must be available through PDO SQLite. SQLite `3.24.0+` is required becaus
 cp config/config.example.php config/config.php
 php scripts/migrate.php
 printf '%s\n' 'change-this-password' | php scripts/user.php create admin --admin --password-stdin
-php -S 127.0.0.1:21115 -t public public/index.php
+RUSTDESK_API_REQUIRE_HTTPS=0 php -S 127.0.0.1:21114 -t public public/index.php
 ```
 
 Open:
 
 ```text
-http://127.0.0.1:21115/admin
+http://127.0.0.1:21114/admin
 ```
 
 In RustDesk, set **API Server** to the base URL only:

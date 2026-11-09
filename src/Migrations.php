@@ -23,7 +23,7 @@ final class Migrations
         );
 
         $current = $this->currentVersion();
-        if ($current > 2) {
+        if ($current > 3) {
             throw new RuntimeException('Database schema is newer than this code understands.');
         }
 
@@ -35,6 +35,11 @@ final class Migrations
         if ($current < 2) {
             $this->applyV2();
             $applied[] = 2;
+        }
+
+        if ($current < 3) {
+            $this->applyV3();
+            $applied[] = 3;
         }
 
         return $applied;
@@ -219,4 +224,30 @@ final class Migrations
             throw $exception;
         }
     }
+    private function applyV3()
+    {
+        $pdo = $this->db->pdo();
+        $pdo->beginTransaction();
+        try {
+            // Some legacy databases predate the login audit table.
+            $pdo->exec('CREATE TABLE IF NOT EXISTS login_attempts (
+                id INTEGER PRIMARY KEY AUTOINCREMENT,
+                username TEXT NOT NULL,
+                username_canonical TEXT NOT NULL,
+                remote_ip TEXT NOT NULL,
+                attempted_at TEXT NOT NULL,
+                success INTEGER NOT NULL CHECK (success IN (0, 1)),
+                reason TEXT NOT NULL
+            )');
+            $pdo->exec('CREATE INDEX IF NOT EXISTS idx_login_attempts_account ON login_attempts(username_canonical, attempted_at)');
+            $pdo->exec('CREATE INDEX IF NOT EXISTS idx_login_attempts_ip ON login_attempts(remote_ip, attempted_at)');
+            $stmt = $pdo->prepare('INSERT INTO schema_migrations(version, applied_at) VALUES(3, :now)');
+            $stmt->execute(array(':now' => $this->db->now()));
+            $pdo->commit();
+        } catch (Exception $exception) {
+            $pdo->rollBack();
+            throw $exception;
+        }
+    }
+
 }

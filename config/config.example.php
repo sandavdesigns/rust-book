@@ -10,6 +10,11 @@ declare(strict_types=1);
  * ship a default administrator account or password.
  */
 return array(
+    // Keep enabled in production. Local HTTP tests must explicitly opt out.
+    'require_https' => true,
+    // Exact proxy IPs only. The proxy must overwrite forwarding headers and
+    // the backend must accept connections only from these proxies.
+    'trusted_proxies' => array(),
     /*
      * SQLite database path. Relative paths are resolved from the repository
      * root. Keep the database outside public/.

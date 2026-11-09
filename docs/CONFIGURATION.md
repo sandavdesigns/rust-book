@@ -22,6 +22,36 @@ Environment variables can override the same options. Do not introduce a second c
 
 ## Options
 
+### `require_https`
+
+- Boolean, default `true`.
+- Environment: `RUSTDESK_API_REQUIRE_HTTPS` (`1` or `0`).
+- HTTP requests are rejected with 426 before authentication. This includes
+  loopback, because a local reverse proxy can otherwise expose an HTTP bypass.
+- Native HTTPS or HTTPS attested by an explicitly trusted proxy is accepted.
+- Set `0` only for an isolated local test server bound to loopback; never for
+  public deployment. This option is not editable in the admin panel.
+
+### `trusted_proxies`
+
+- Array of exact IPv4/IPv6 addresses, default empty.
+- Environment: `RUSTDESK_API_TRUSTED_PROXIES`, comma-separated IP addresses.
+- Only these socket peers may supply `X-Forwarded-Proto: https` and
+  `X-Forwarded-For`. The latter is walked right-to-left to the nearest
+  untrusted address; a caller-supplied leftmost value cannot bypass throttling.
+- The proxy must overwrite forwarding headers; restrict backend reachability
+  to the proxy. Native Nginx/PHP-FPM with `fastcgi_param HTTPS on` needs no
+  forwarded-proto trust. Invalid or ambiguous proto headers do not enable TLS.
+- Example: `array('192.0.2.10')`. Use the actual proxy IP, not a whole LAN.
+
+### Request and address-book limits
+
+All dynamic requests are limited to 1 MiB. JSON bodies are read with a bounded
+stream even without Content-Length. Configure the web server and PHP
+`post_max_size` as well, because PHP may parse admin forms before application
+code runs. Protocol limits bound peer counts, tag counts, and field lengths;
+oversize imports fail before replacement rather than silently truncating data.
+
 ### `database_path`
 
 - Type: string path
@@ -67,6 +97,13 @@ This controls how long SQLite waits for a locked database before returning an er
 - Environment: `RUSTDESK_API_LOGIN_MAX_FAILURES`
 - Example: `8`
 - Security impact: high; setting `0` disables rate limiting.
+- The threshold applies independently per canonical account and per source IP.
+  Verification reserves a slot atomically before password hashing. Pending
+  attempts count until finished successfully or the rolling window expires.
+  A locked account can therefore also be denied to its legitimate owner until
+  the window expires. A proxy without correct client-IP forwarding aggregates
+  users under the proxy IP. Configure additional gateway throttling for larger
+  deployments; this is not a distributed denial-of-service defense.
 - Reload required: new checks use the new value. If set in the admin Settings page, no PHP reload is needed.
 
 ### `login_window_seconds`
