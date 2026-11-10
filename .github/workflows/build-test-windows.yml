@@ -1,0 +1,303 @@
+name: Build isolated RustDesk Windows test client
+
+on:
+  push:
+    paths:
+      - '.github/workflows/build-test-windows.yml'
+      - 'experimental/secure-tcp-v1/prepare-test-client.py'
+      - 'experimental/secure-tcp-v1/prepare-windows-test-client.py'
+      - 'experimental/secure-tcp-v1/client-1.5.1-strict.patch'
+      - 'experimental/secure-tcp-v1/client-1.5.1-address-book-notes.patch'
+  workflow_dispatch:
+
+concurrency:
+  group: rustdesk-test-windows-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+env:
+  FLUTTER_VERSION: '3.24.5'
+  RUST_VERSION: '1.75'
+  LLVM_VERSION: '15.0.6'
+  VCPKG_COMMIT_ID: '9e593bb18ea69cc5095e012465dcd675a822ed0d'
+  WINDOWS_ENGINE_SHA256: 'ec8cabf36ee4ff24c8d98de25b00e70781eb03876265aee84d0fe554a110036e'
+
+jobs:
+  generate-bridge:
+    name: Generate Flutter bridge
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Check out pinned public RustDesk source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
+        with:
+          repository: rustdesk/rustdesk
+          ref: 23e5bb471a040d62f0a6ad52591fb30784265b73
+          path: client
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install bridge prerequisites
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y clang cmake gcc g++ libclang-dev libgtk-3-dev llvm-dev nasm ninja-build pkg-config
+
+      - name: Install Rust for bridge generation
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1.85.0
+        with:
+          toolchain: '1.75'
+          targets: x86_64-unknown-linux-gnu
+          components: rustfmt
+
+      - name: Cache bridge Rust build data
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.7.8
+        with:
+          workspaces: client
+          prefix-key: rustdesk-1-5-1-windows-bridge
+
+      - name: Install Flutter for bridge generation
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.21.0
+        with:
+          channel: stable
+          flutter-version: '3.22.3'
+          cache: true
+
+      - name: Generate bridge artifacts as pinned upstream does
+        working-directory: client
+        run: |
+          cargo install cargo-expand --version 1.0.95 --locked
+          cargo install flutter_rust_bridge_codegen --version 1.80.1 --features uuid --locked
+          sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' flutter/pubspec.yaml
+          (cd flutter && flutter pub get)
+          ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
+          cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
+
+      - name: Upload generated bridge
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
+        with:
+          name: rustdesk-1-5-1-windows-bridge
+          if-no-files-found: error
+          path: |
+            client/src/bridge_generated.rs
+            client/src/bridge_generated.io.rs
+            client/flutter/lib/generated_bridge.dart
+            client/flutter/lib/generated_bridge.freezed.dart
+            client/flutter/macos/Runner/bridge_generated.h
+            client/flutter/ios/Runner/bridge_generated.h
+
+  build-windows-x64:
+    name: Build and smoke-test Windows x64 bundle
+    needs: generate-bridge
+    runs-on: windows-2022
+    timeout-minutes: 120
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Check out pinned public RustDesk source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
+        with:
+          repository: rustdesk/rustdesk
+          ref: 23e5bb471a040d62f0a6ad52591fb30784265b73
+          path: client
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Apply strict transport, notes, and isolated Windows identity
+        shell: bash
+        run: |
+          python3 experimental/secure-tcp-v1/prepare-test-client.py \
+            --source client \
+            --strict-patch experimental/secure-tcp-v1/client-1.5.1-strict.patch \
+            --notes-patch experimental/secure-tcp-v1/client-1.5.1-address-book-notes.patch
+          python3 experimental/secure-tcp-v1/prepare-windows-test-client.py --source client
+
+      - name: Restore generated bridge
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4.3.0
+        with:
+          name: rustdesk-1-5-1-windows-bridge
+          path: client
+
+      - name: Install LLVM and Clang
+        uses: KyleMayes/install-llvm-action@ebc0426251bc40c7cd31162802432c68818ab8f0 # v2.0.9
+        with:
+          version: ${{ env.LLVM_VERSION }}
+
+      - name: Install Flutter
+        id: flutter
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.21.0
+        with:
+          channel: stable
+          flutter-version: ${{ env.FLUTTER_VERSION }}
+          cache: true
+
+      - name: Install verified upstream Windows Flutter engine
+        shell: pwsh
+        run: |
+          flutter doctor -v
+          flutter precache --windows
+          $url = 'https://github.com/rustdesk/engine/releases/download/main/windows-x64-release.zip'
+          Invoke-WebRequest -Uri $url -OutFile windows-x64-release.zip
+          $actual = (Get-FileHash windows-x64-release.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          if ($actual -ne $env:WINDOWS_ENGINE_SHA256) {
+            throw "Unexpected RustDesk Windows engine SHA-256: $actual"
+          }
+          Expand-Archive windows-x64-release.zip -DestinationPath windows-x64-release
+          $engine = Join-Path '${{ steps.flutter.outputs['CACHE-PATH'] }}' 'bin\cache\artifacts\engine\windows-x64-release'
+          Copy-Item -Force -Recurse 'windows-x64-release\*' $engine
+
+      - name: Apply pinned upstream Flutter SDK workaround
+        shell: bash
+        working-directory: client
+        run: |
+          flutter_root="$(dirname "$(dirname "$(command -v flutter)")")"
+          patch_file="$GITHUB_WORKSPACE/client/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          if git -C "$flutter_root" apply --check "$patch_file"; then
+            git -C "$flutter_root" apply "$patch_file"
+          elif git -C "$flutter_root" apply --reverse --check "$patch_file"; then
+            echo "Pinned Flutter workaround already present in restored SDK cache"
+          else
+            echo "Flutter SDK does not match the expected workaround state" >&2
+            exit 1
+          fi
+
+      - name: Install Rust for Windows x64
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1.85.0
+        with:
+          toolchain: ${{ env.RUST_VERSION }}
+          targets: x86_64-pc-windows-msvc
+          components: rustfmt
+
+      - name: Cache Rust build data
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.7.8
+        with:
+          workspaces: client
+          prefix-key: rustdesk-1-5-1-windows-x64
+
+      - name: Set up pinned vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.5.0
+        with:
+          vcpkgDirectory: C:\vcpkg
+          vcpkgGitCommitId: ${{ env.VCPKG_COMMIT_ID }}
+          doNotCache: false
+
+      - name: Install Windows x64 vcpkg dependencies
+        shell: bash
+        env:
+          VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
+        run: |
+          "$VCPKG_ROOT/vcpkg" install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"
+
+      - name: Build isolated portable GUI bundle
+        working-directory: client
+        shell: pwsh
+        run: |
+          python .\build.py --portable --flutter --skip-portable-pack --hwcodec --vram
+          $bundle = 'flutter\build\windows\x64\runner\Release'
+          if (-not (Test-Path "$bundle\RustDeskLab.exe" -PathType Leaf)) {
+            throw 'RustDeskLab.exe was not produced'
+          }
+          if (Test-Path "$bundle\rustdesk.exe") {
+            throw 'Stock rustdesk.exe unexpectedly exists in the isolated bundle'
+          }
+          if (-not (Test-Path "$bundle\librustdesk.dll" -PathType Leaf)) {
+            throw 'librustdesk.dll was not bundled'
+          }
+          $versionInfo = (Get-Item "$bundle\RustDeskLab.exe").VersionInfo
+          if ($versionInfo.ProductName -ne 'RustDeskLab' -or $versionInfo.OriginalFilename -ne 'RustDeskLab.exe') {
+            throw "Unexpected Windows product identity: $($versionInfo.ProductName), $($versionInfo.OriginalFilename)"
+          }
+          Move-Item $bundle "$env:GITHUB_WORKSPACE\RustDeskLab-windows-x64"
+          @"
+          RustDesk source: 23e5bb471a040d62f0a6ad52591fb30784265b73
+          hbb_common: fae47e024dd83cef6aaecde0aa7d11731df11649
+          Flutter: $env:FLUTTER_VERSION
+          Rust: $env:RUST_VERSION
+          vcpkg: $env:VCPKG_COMMIT_ID
+          Windows engine SHA-256: $env:WINDOWS_ENGINE_SHA256
+          Unsigned internal test build; not for customer deployment.
+          "@ | Set-Content "$env:GITHUB_WORKSPACE\RustDeskLab-windows-x64\BUILD-INFO.txt"
+
+      - name: Run Windows Rust tests
+        working-directory: client
+        shell: bash
+        run: |
+          cargo test --locked --release --lib --features hwcodec,flutter,vram
+          cargo test --locked --release -p clipboard
+
+      - name: Smoke-test isolated unattended installation and reboot registration
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = 'Stop'
+          $officialBefore = Get-CimInstance Win32_Service -Filter "Name='RustDesk'" -ErrorAction SilentlyContinue | Select-Object Name, PathName, StartMode, State | ConvertTo-Json -Compress
+          $portable = "$env:GITHUB_WORKSPACE\RustDeskLab-windows-x64\RustDeskLab.exe"
+          try {
+            & $portable --silent-install
+            if ($LASTEXITCODE -ne 0) {
+              throw "Silent install exited with $LASTEXITCODE"
+            }
+            $deadline = (Get-Date).AddSeconds(45)
+            do {
+              Start-Sleep -Seconds 1
+              $service = Get-CimInstance Win32_Service -Filter "Name='RustDeskLab'" -ErrorAction SilentlyContinue
+            } until (($service -and $service.State -eq 'Running') -or (Get-Date) -ge $deadline)
+            if (-not $service) {
+              throw 'RustDeskLab service was not registered'
+            }
+            if ($service.State -ne 'Running') {
+              throw "RustDeskLab service did not reach Running state: $($service.State)"
+            }
+            if ($service.StartMode -ne 'Auto') {
+              throw "RustDeskLab service is not registered for reboot startup: $($service.StartMode)"
+            }
+            if ($service.PathName -notmatch '(?i)\\RustDeskLab\\RustDeskLab\.exe"? --service$') {
+              throw "Unexpected RustDeskLab service binary path: $($service.PathName)"
+            }
+            if (-not (Test-Path "$env:ProgramFiles\RustDeskLab\RustDeskLab.exe" -PathType Leaf)) {
+              throw 'Silent install did not create the isolated Program Files executable'
+            }
+            if (-not (Test-Path "$env:ProgramFiles\RustDeskLab\RuntimeBroker_rustdesklab.exe" -PathType Leaf)) {
+              throw 'Silent install did not create the isolated privacy broker executable'
+            }
+            if (Test-Path "$env:ProgramFiles\RustDeskLab\RuntimeBroker_rustdesk.exe") {
+              throw 'The stock RustDesk privacy-broker namespace leaked into the RustDeskLab install'
+            }
+            $officialAfter = Get-CimInstance Win32_Service -Filter "Name='RustDesk'" -ErrorAction SilentlyContinue | Select-Object Name, PathName, StartMode, State | ConvertTo-Json -Compress
+            if ($officialBefore -ne $officialAfter) {
+              throw 'The official RustDesk service namespace changed during the RustDeskLab install'
+            }
+          } finally {
+            sc.exe stop RustDeskLab | Out-Host
+            Start-Sleep -Seconds 2
+            sc.exe delete RustDeskLab | Out-Host
+            Get-Process RustDeskLab -ErrorAction SilentlyContinue | Stop-Process -Force
+          }
+
+      - name: Archive portable bundle and record hashes
+        shell: pwsh
+        run: |
+          Compress-Archive -Path RustDeskLab-windows-x64 -DestinationPath RustDeskLab-windows-x64.zip
+          $zipHash = (Get-FileHash RustDeskLab-windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
+          $exeHash = (Get-FileHash RustDeskLab-windows-x64\RustDeskLab.exe -Algorithm SHA256).Hash.ToLowerInvariant()
+          @(
+            "$zipHash  RustDeskLab-windows-x64.zip"
+            "$exeHash  RustDeskLab-windows-x64/RustDeskLab.exe"
+          ) | Set-Content SHA256SUMS-windows-x64.txt
+
+      - name: Upload unsigned isolated Windows bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
+        with:
+          name: RustDeskLab-windows-x64
+          if-no-files-found: error
+          path: |
+            RustDeskLab-windows-x64.zip
+            SHA256SUMS-windows-x64.txt
