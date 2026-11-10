@@ -1,4 +1,5 @@
 name: Build isolated RustDesk Windows test client
+# The runner checks service registration; a real endpoint reboot is tested separately.
 
 on:
   push:
