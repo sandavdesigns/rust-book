@@ -71,17 +71,22 @@ def main():
     parser.add_argument('--source', required=True, help='Disposable RustDesk checkout to modify')
     parser.add_argument('--strict-patch', required=True, help='Path to client-1.5.1-strict.patch')
     parser.add_argument('--notes-patch', required=True, help='Path to client-1.5.1-address-book-notes.patch')
+    parser.add_argument('--settings-patch', required=True, help='Path to atomic server-settings patch')
     args = parser.parse_args()
 
     root = pathlib.Path(args.source).resolve()
     strict_patch = pathlib.Path(args.strict_patch).resolve()
     notes_patch = pathlib.Path(args.notes_patch).resolve()
+    settings_patch = pathlib.Path(args.settings_patch).resolve()
     if not (root / '.git').exists():
         fail('source is not a Git checkout: {}'.format(root))
     if not strict_patch.is_file():
         fail('strict patch not found: {}'.format(strict_patch))
     if not notes_patch.is_file():
         fail('address-book notes patch not found: {}'.format(notes_patch))
+
+    if not settings_patch.is_file():
+        fail('settings patch not found: {}'.format(settings_patch))
 
     if command(root, 'git', 'rev-parse', 'HEAD') != UPSTREAM_COMMIT:
         fail('unexpected RustDesk commit')
@@ -96,6 +101,9 @@ def main():
     subprocess.check_call(['git', 'apply', str(strict_patch)], cwd=str(root))
     require_sha(root, 'src/client.rs', EXPECTED_STRICT_PATCHED_CLIENT_SHA256)
     subprocess.check_call(['git', 'apply', str(notes_patch)], cwd=str(root))
+
+    subprocess.check_call(['git', 'apply', '--check', str(settings_patch)], cwd=str(root))
+    subprocess.check_call(['git', 'apply', str(settings_patch)], cwd=str(root))
 
     # APP_NAME controls the config, preferences and IPC namespace at runtime.
     replace_once(

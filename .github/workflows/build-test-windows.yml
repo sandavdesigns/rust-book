@@ -9,6 +9,7 @@ on:
       - 'experimental/secure-tcp-v1/prepare-windows-test-client.py'
       - 'experimental/secure-tcp-v1/client-1.5.1-strict.patch'
       - 'experimental/secure-tcp-v1/client-1.5.1-address-book-notes.patch'
+      - 'experimental/secure-tcp-v1/client-1.5.1-settings-service-sync.patch'
   workflow_dispatch:
 
 concurrency:
@@ -123,7 +124,8 @@ jobs:
           python3 experimental/secure-tcp-v1/prepare-test-client.py \
             --source client \
             --strict-patch experimental/secure-tcp-v1/client-1.5.1-strict.patch \
-            --notes-patch experimental/secure-tcp-v1/client-1.5.1-address-book-notes.patch
+            --notes-patch experimental/secure-tcp-v1/client-1.5.1-address-book-notes.patch \
+            --settings-patch experimental/secure-tcp-v1/client-1.5.1-settings-service-sync.patch
           python3 experimental/secure-tcp-v1/prepare-windows-test-client.py --source client
 
       - name: Restore generated bridge
@@ -244,6 +246,7 @@ jobs:
         run: |
           cargo test --locked --release --lib --features hwcodec,flutter,vram
           cargo test --locked --release -p clipboard
+          cargo test --locked --release -p hbb_common server_options
 
       - name: Smoke-test isolated unattended installation and reboot registration
         id: smoke
