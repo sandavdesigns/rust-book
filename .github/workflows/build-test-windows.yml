@@ -190,6 +190,7 @@ jobs:
         with:
           workspaces: client
           prefix-key: rustdesk-1-5-1-windows-x64
+          cache-on-failure: true
 
       - name: Set up pinned vcpkg
         uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.5.0
@@ -245,15 +246,23 @@ jobs:
           cargo test --locked --release -p clipboard
 
       - name: Smoke-test isolated unattended installation and reboot registration
+        id: smoke
+        continue-on-error: true
         shell: pwsh
         run: |
           $ErrorActionPreference = 'Stop'
           $officialBefore = Get-CimInstance Win32_Service -Filter "Name='RustDesk'" -ErrorAction SilentlyContinue | Select-Object Name, PathName, StartMode, State | ConvertTo-Json -Compress
           $portable = "$env:GITHUB_WORKSPACE\RustDeskLab-windows-x64\RustDeskLab.exe"
           try {
-            & $portable --silent-install
-            if ($LASTEXITCODE -ne 0) {
-              throw "Silent install exited with $LASTEXITCODE"
+            $start = [System.Diagnostics.ProcessStartInfo]::new($portable, '--silent-install')
+            $start.UseShellExecute = $false
+            $install = [System.Diagnostics.Process]::Start($start)
+            if (-not $install.WaitForExit(120000)) {
+              Stop-Process -Id $install.Id -Force -ErrorAction SilentlyContinue
+              throw 'Silent install did not exit within 120 seconds'
+            }
+            if ($install.ExitCode -ne 0) {
+              throw "Silent install exited with $($install.ExitCode)"
             }
             $deadline = (Get-Date).AddSeconds(45)
             do {
@@ -293,8 +302,12 @@ jobs:
           }
 
       - name: Archive portable bundle and record hashes
+        if: ${{ always() && hashFiles('RustDeskLab-windows-x64/RustDeskLab.exe') != '' }}
         shell: pwsh
+        env:
+          SMOKE_OUTCOME: ${{ steps.smoke.outcome }}
         run: |
+          Add-Content 'RustDeskLab-windows-x64\BUILD-INFO.txt' "Windows unattended-install smoke-test outcome: $env:SMOKE_OUTCOME; see the CI job log for details."
           Compress-Archive -Path RustDeskLab-windows-x64 -DestinationPath RustDeskLab-windows-x64.zip
           $zipHash = (Get-FileHash RustDeskLab-windows-x64.zip -Algorithm SHA256).Hash.ToLowerInvariant()
           $exeHash = (Get-FileHash RustDeskLab-windows-x64\RustDeskLab.exe -Algorithm SHA256).Hash.ToLowerInvariant()
@@ -304,6 +317,7 @@ jobs:
           ) | Set-Content SHA256SUMS-windows-x64.txt
 
       - name: Upload unsigned isolated Windows bundle
+        if: ${{ always() && hashFiles('RustDeskLab-windows-x64.zip') != '' }}
         uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
         with:
           name: RustDeskLab-windows-x64
@@ -311,3 +325,8 @@ jobs:
           path: |
             RustDeskLab-windows-x64.zip
             SHA256SUMS-windows-x64.txt
+
+      - name: Fail job when isolated-install smoke test failed
+        if: ${{ steps.smoke.outcome == 'failure' }}
+        shell: pwsh
+        run: exit 1
