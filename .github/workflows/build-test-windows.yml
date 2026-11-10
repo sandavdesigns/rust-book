@@ -157,7 +157,10 @@ jobs:
             throw "Unexpected RustDesk Windows engine SHA-256: $actual"
           }
           Expand-Archive windows-x64-release.zip -DestinationPath windows-x64-release
-          $engine = Join-Path '${{ steps.flutter.outputs['CACHE-PATH'] }}' 'bin\cache\artifacts\engine\windows-x64-release'
+          $engine = Join-Path $env:FLUTTER_ROOT 'bin\cache\artifacts\engine\windows-x64-release'
+          if (-not (Test-Path $engine -PathType Container)) {
+            throw "Flutter precache did not create the expected engine directory: $engine"
+          }
           Copy-Item -Force -Recurse 'windows-x64-release\*' $engine
 
       - name: Apply pinned upstream Flutter SDK workaround
