@@ -99,6 +99,10 @@ jobs:
     runs-on: windows-2022
     timeout-minutes: 120
     steps:
+      - name: Keep pinned source checksums independent of Windows checkout defaults
+        shell: pwsh
+        run: git config --global core.autocrlf input
+
       - name: Check out this repository
         uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
         with:
