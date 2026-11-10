@@ -199,10 +199,12 @@ jobs:
           doNotCache: false
 
       - name: Install Windows x64 vcpkg dependencies
+        working-directory: client
         shell: bash
         env:
           VCPKG_DEFAULT_HOST_TRIPLET: x64-windows-static
         run: |
+          test -f vcpkg.json
           "$VCPKG_ROOT/vcpkg" install --triplet x64-windows-static --x-install-root="$VCPKG_ROOT/installed"
 
       - name: Build isolated portable GUI bundle
