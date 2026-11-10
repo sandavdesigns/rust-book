@@ -28,6 +28,6 @@ for path, expected in [("/",200),("/api/login-options",200),("/api/ab",401),("/a
     print("https",path,code,"ok")
 with urllib.request.urlopen("https://"+host+"/downloads/RustDeskLab-windows-x64.zip", timeout=30, context=ctx) as r:
     digest=hashlib.file_digest(r,"sha256").hexdigest()
-assert digest=="8cb75d77a3606b0f0b9f0780a253a2cb1f9a5ea021b1e5981cba658ae7be1010", digest
+assert digest=="0dffb28b935b5795cc77184d615381d9d24eb3d52a3792abdea9068a0e78fec6", digest
 print("download_sha256",digest,"ok")
 print("PASS: public network, TLS, API authentication boundary, blocked admin and verified client download")
