@@ -4,6 +4,7 @@ declare(strict_types=1);
 require_once __DIR__ . '/AddressBookValidationException.php';
 require_once __DIR__ . '/WebHelpers.php';
 require_once __DIR__ . '/AppConfig.php';
+require_once __DIR__ . '/HttpSecurity.php';
 require_once __DIR__ . '/Database.php';
 require_once __DIR__ . '/Migrations.php';
 require_once __DIR__ . '/Settings.php';

@@ -40,6 +40,7 @@ if (PHP_SAPI === 'cli-server') {
 require_once __DIR__ . '/../src/bootstrap.php';
 
 $config = AppConfig::load(dirname(__DIR__));
+HttpSecurity::enforce($config);
 $uri = isset($_SERVER['REQUEST_URI']) ? (string) $_SERVER['REQUEST_URI'] : '/';
 $path = parse_url($uri, PHP_URL_PATH);
 if (!is_string($path) || $path === '') {

@@ -1,0 +1,391 @@
+--- a/src/lib.rs
++++ b/src/lib.rs
+@@ -1,4 +1,5 @@
+ mod rendezvous_server;
++mod secure_tcp;
+ pub use rendezvous_server::*;
+ pub mod common;
+ mod database;
+--- a/src/rendezvous_server.rs
++++ b/src/rendezvous_server.rs
+@@ -1,9 +1,9 @@
+ use crate::common::*;
+ use crate::peer::*;
++use crate::secure_tcp::{handshake, SecureCodec};
+ use hbb_common::{
+     allow_err, bail,
+     bytes::{Bytes, BytesMut},
+-    bytes_codec::BytesCodec,
+     config,
+     futures::future::join_all,
+     futures_util::{
+@@ -48,7 +48,7 @@
+ }
+ 
+ const REG_TIMEOUT: i64 = 30_000;
+-type TcpStreamSink = SplitSink<Framed<TcpStream, BytesCodec>, Bytes>;
++type TcpStreamSink = SplitSink<Framed<TcpStream, SecureCodec>, Bytes>;
+ type WsSink = SplitSink<tokio_tungstenite::WebSocketStream<TcpStream>, tungstenite::Message>;
+ enum Sink {
+     TcpStream(TcpStreamSink),
+@@ -1177,8 +1177,19 @@
+                 }
+             }
+         } else {
+-            let (a, mut b) = Framed::new(stream, BytesCodec::new()).split();
++            let mut framed = Framed::new(stream, SecureCodec::new());
++            let first = if let Some(sk) = self.inner.sk.as_ref() {
++                handshake(&mut framed, sk).await?
++            } else {
++                None
++            };
++            let (a, mut b) = framed.split();
+             sink = Some(Sink::TcpStream(a));
++            if let Some(bytes) = first {
++                if !self.handle_tcp(&bytes, &mut sink, addr, key, ws).await {
++                    return Ok(());
++                }
++            }
+             while let Ok(Some(Ok(bytes))) = timeout(30_000, b.next()).await {
+                 if !self.handle_tcp(&bytes, &mut sink, addr, key, ws).await {
+                     break;
+--- /dev/null
++++ b/src/secure_tcp.rs
+@@ -0,0 +1,337 @@
++// SPDX-License-Identifier: AGPL-3.0-only
++// v1 key derivation follows rustdesk/hbb_common at
++// fae47e024dd83cef6aaecde0aa7d11731df11649, src/tcp.rs.
++use hbb_common::{
++    anyhow::{anyhow, bail},
++    bytes::{Bytes, BytesMut}, bytes_codec::BytesCodec,
++    futures_util::{SinkExt, StreamExt}, protobuf::Message,
++    rendezvous_proto::{rendezvous_message::Union, KeyExchange, KxParams, RendezvousMessage},
++    tcp::Encrypt, timeout, tokio::net::TcpStream,
++    tokio_util::codec::{Decoder, Encoder, Framed}, ResultType,
++};
++use sodiumoxide::crypto::{box_, generichash, secretbox, sign};
++use std::io;
++
++const VERSION: u32 = 1;
++const PARAMS_DOMAIN: &[u8] = b"rdkx-params";
++const MAX_FRAME: usize = 1024 * 1024;
++
++// Not Clone: counters must belong to the single Framed object shared by split().
++struct Cipher {
++    send: secretbox::Key,
++    recv: secretbox::Key,
++    sent: u64,
++    received: u64,
++}
++
++impl Cipher {
++    fn new(key: secretbox::Key, initiator: &[u8], responder: &[u8], client: bool) -> ResultType<Self> {
++        let a = Self::derive(&key, 1, initiator, responder)?;
++        let b = Self::derive(&key, 2, initiator, responder)?;
++        let (send, recv) = if client { (a, b) } else { (b, a) };
++        Ok(Self { send, recv, sent: 0, received: 0 })
++    }
++
++    fn derive(key: &secretbox::Key, direction: u8, initiator: &[u8], responder: &[u8]) -> ResultType<secretbox::Key> {
++        if initiator.len() != 32 || responder.len() != 32 { bail!("invalid transcript key length"); }
++        let failed = |_| anyhow!("key derivation failed");
++        let mut h = generichash::State::new(Some(32), Some(&key.0)).map_err(failed)?;
++        for part in [b"rdkx-spl".as_slice(), &[direction], &VERSION.to_le_bytes(),
++                     &VERSION.to_le_bytes(), initiator, responder] {
++            h.update(part).map_err(failed)?;
++        }
++        secretbox::Key::from_slice(h.finalize().map_err(failed)?.as_ref())
++            .ok_or_else(|| anyhow!("invalid derived key length"))
++    }
++
++    fn nonce(counter: &mut u64) -> io::Result<secretbox::Nonce> {
++        *counter = counter.checked_add(1).ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "nonce exhausted"))?;
++        let mut nonce = secretbox::Nonce([0; secretbox::NONCEBYTES]);
++        nonce.0[..8].copy_from_slice(&counter.to_le_bytes());
++        Ok(nonce)
++    }
++
++    fn enc(&mut self, data: &[u8]) -> io::Result<Vec<u8>> {
++        Ok(secretbox::seal(data, &Self::nonce(&mut self.sent)?, &self.send))
++    }
++
++    fn dec(&mut self, data: &[u8]) -> io::Result<Vec<u8>> {
++        // No unauthenticated one-byte bypass on the rendezvous channel.
++        secretbox::open(data, &Self::nonce(&mut self.received)?, &self.recv)
++            .map_err(|_| io::Error::new(io::ErrorKind::InvalidData, "authentication failed"))
++    }
++}
++
++pub(crate) struct SecureCodec { inner: BytesCodec, cipher: Option<Cipher> }
++
++impl SecureCodec {
++    pub(crate) fn new() -> Self {
++        let mut inner = BytesCodec::new();
++        inner.set_max_packet_length(MAX_FRAME);
++        Self { inner, cipher: None }
++    }
++}
++
++impl Decoder for SecureCodec {
++    type Item = BytesMut;
++    type Error = io::Error;
++    fn decode(&mut self, src: &mut BytesMut) -> io::Result<Option<BytesMut>> {
++        let Some(data) = self.inner.decode(src)? else { return Ok(None) };
++        Ok(Some(match self.cipher.as_mut() {
++            Some(cipher) => BytesMut::from(cipher.dec(&data)?.as_slice()),
++            None => {
++                if let Ok(message) = RendezvousMessage::parse_from_bytes(&data) {
++                    let has_token = match message.union {
++                        Some(Union::PunchHoleRequest(ph)) => !ph.token.is_empty(),
++                        Some(Union::RequestRelay(relay)) => !relay.token.is_empty(),
++                        Some(Union::Hc(hc)) => !hc.token.is_empty(),
++                        _ => false,
++                    };
++                    if has_token {
++                        return Err(io::Error::new(io::ErrorKind::PermissionDenied, "token requires secure TCP"));
++                    }
++                }
++                data
++            },
++        }))
++    }
++}
++
++impl Encoder<Bytes> for SecureCodec {
++    type Error = io::Error;
++    fn encode(&mut self, data: Bytes, dst: &mut BytesMut) -> io::Result<()> {
++        let data = match self.cipher.as_mut() {
++            Some(cipher) => Bytes::from(cipher.enc(&data)?),
++            None => data,
++        };
++        self.inner.encode(data, dst)
++    }
++}
++
++// Called before split, so buffered frames and every subsequent stored sink use
++// one codec. Any malformed exchange terminates the connection; never downgrade.
++pub(crate) async fn handshake(stream: &mut Framed<TcpStream, SecureCodec>, sk: &sign::SecretKey) -> ResultType<Option<BytesMut>> {
++    let (mut pk, ephemeral_sk) = box_::gen_keypair();
++    // X25519 ignores this bit; its signed presence requires signed parameters.
++    pk.0[31] |= 0x80;
++    let params = KxParams { pk: Bytes::copy_from_slice(&pk.0), version: VERSION, ..Default::default() };
++    let mut signed = PARAMS_DOMAIN.to_vec();
++    signed.extend(params.write_to_bytes()?);
++    let mut offer = RendezvousMessage::new();
++    offer.set_key_exchange(KeyExchange {
++        keys: vec![Bytes::from(sign::sign(&pk.0, sk))], version: VERSION,
++        signed_params: Bytes::from(sign::sign(&signed, sk)), ..Default::default()
++    });
++    timeout(5_000, stream.send(Bytes::from(offer.write_to_bytes()?))).await??;
++    let bytes = timeout(5_000, stream.next()).await?.ok_or_else(|| anyhow!("handshake closed"))??;
++    let message = RendezvousMessage::parse_from_bytes(&bytes)?;
++    match message.union {
++        Some(Union::KeyExchange(ex)) => {
++            if ex.version != VERSION || ex.keys.len() != 2 || ex.keys[0].len() != 32 || ex.keys[1].len() != 48 {
++                bail!("secure TCP requires a valid v1 exchange (modern client required)");
++            }
++            let key = Encrypt::decode(&ex.keys[1], &ex.keys[0], &ephemeral_sk)?;
++            stream.codec_mut().cipher = Some(Cipher::new(key, &ex.keys[0], &pk.0, false)?);
++            Ok(None)
++        }
++        Some(Union::PunchHoleRequest(ref ph)) if !ph.token.is_empty() => bail!("token requires secure TCP"),
++        Some(Union::RequestRelay(ref relay)) if !relay.token.is_empty() => bail!("token requires secure TCP"),
++        Some(Union::Hc(ref hc)) if !hc.token.is_empty() => bail!("token requires secure TCP"),
++        _ => Ok(Some(bytes)),
++    }
++}
++
++#[cfg(test)]
++mod tests {
++    use super::*;
++    use hbb_common::tokio::{self, io::AsyncWriteExt, net::TcpListener};
++
++    fn init() { sodiumoxide::init().unwrap(); }
++    fn hex(data: &[u8]) -> String { data.iter().map(|b| format!("{b:02x}")).collect() }
++    fn pair() -> (Cipher, Cipher) {
++        let key = secretbox::gen_key();
++        (Cipher::new(key.clone(), &[2; 32], &[3; 32], true).unwrap(),
++         Cipher::new(key, &[2; 32], &[3; 32], false).unwrap())
++    }
++
++    #[test]
++    fn official_v1_vectors_and_direction_separation() {
++        init();
++        let key = secretbox::Key([0x11; 32]);
++        // Constants from official hbb_common fae47e0/src/tcp.rs tests.
++        assert_eq!(hex(&Cipher::derive(&key, 1, &[0x22; 32], &[0x33; 32]).unwrap().0),
++                   "c189ec6e1935c0751cfc85a0f075405cae507d7925bb19687caf56cbb54e0ecf");
++        assert_eq!(hex(&Cipher::derive(&key, 2, &[0x22; 32], &[0x33; 32]).unwrap().0),
++                   "8a62648e9195cb10ea900c0a24d2a166c1e982347a2dc6833c3e756bf5715d36");
++        let (mut client, mut server) = pair();
++        let a = client.enc(b"same message").unwrap();
++        let b = server.enc(b"same message").unwrap();
++        assert_ne!(a, b);
++        assert_eq!(server.dec(&a).unwrap(), b"same message");
++        assert_eq!(client.dec(&b).unwrap(), b"same message");
++        assert!(server.dec(&a).is_err()); // replay
++    }
++
++    #[test]
++    fn tampering_reflection_short_frames_and_counter_exhaustion_fail() {
++        init();
++        let (mut client, mut server) = pair();
++        let mut bytes = client.enc(b"request").unwrap();
++        bytes[0] ^= 1;
++        assert!(server.dec(&bytes).is_err());
++        let (mut client, _) = pair();
++        let bytes = client.enc(b"reflection").unwrap();
++        assert!(client.dec(&bytes).is_err());
++        let (_, mut server) = pair();
++        assert!(server.dec(&[]).is_err());
++        assert!(server.dec(&[0]).is_err());
++        server.sent = u64::MAX;
++        assert!(server.enc(b"exhausted").is_err());
++    }
++
++    fn token_messages(token: &str) -> [RendezvousMessage; 3] {
++        let mut punch = RendezvousMessage::new();
++        punch.set_punch_hole_request(hbb_common::rendezvous_proto::PunchHoleRequest {
++            token: token.into(), ..Default::default()
++        });
++        let mut relay = RendezvousMessage::new();
++        relay.set_request_relay(hbb_common::rendezvous_proto::RequestRelay {
++            token: token.into(), ..Default::default()
++        });
++        let mut hc = RendezvousMessage::new();
++        hc.set_hc(hbb_common::rendezvous_proto::HealthCheck {
++            token: token.into(), ..Default::default()
++        });
++        [punch, relay, hc]
++    }
++
++    #[test]
++    fn plaintext_token_and_oversize_are_rejected() {
++        for token in ["", "synthetic-test-token"] {
++            for message in token_messages(token) {
++                let bytes = message.write_to_bytes().unwrap();
++                let mut wire = BytesMut::new();
++                BytesCodec::new().encode(Bytes::from(bytes.clone()), &mut wire).unwrap();
++                let result = SecureCodec::new().decode(&mut wire);
++                if token.is_empty() {
++                    assert_eq!(&result.unwrap().unwrap()[..], bytes.as_slice());
++                } else {
++                    assert_eq!(result.unwrap_err().kind(), io::ErrorKind::PermissionDenied);
++                }
++            }
++        }
++        let mut wire = BytesMut::new();
++        BytesCodec::new().encode(Bytes::from(vec![0; MAX_FRAME + 1]), &mut wire).unwrap();
++        assert!(SecureCodec::new().decode(&mut wire).is_err());
++    }
++
++    async fn connected() -> (TcpStream, TcpStream) {
++        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
++        let client = TcpStream::connect(listener.local_addr().unwrap()).await.unwrap();
++        let (server, _) = listener.accept().await.unwrap();
++        (client, server)
++    }
++
++    #[tokio::test]
++    async fn handshake_rejects_all_three_plaintext_token_types() {
++        init();
++        for message in token_messages("synthetic-test-token") {
++            let (client, server) = connected().await;
++            let (_, sk) = sign::gen_keypair();
++            let task = tokio::spawn(async move {
++                handshake(&mut Framed::new(server, SecureCodec::new()), &sk).await.is_err()
++            });
++            let mut client = Framed::new(client, BytesCodec::new());
++            client.next().await.unwrap().unwrap();
++            client.send(Bytes::from(message.write_to_bytes().unwrap())).await.unwrap();
++            assert!(task.await.unwrap());
++        }
++    }
++
++    fn client_exchange(offer: &[u8], server_pk: &sign::PublicKey, version: u32) -> (RendezvousMessage, Cipher) {
++        let message = RendezvousMessage::parse_from_bytes(offer).unwrap();
++        let Some(Union::KeyExchange(ex)) = message.union else { panic!("missing offer") };
++        assert_eq!(ex.version, 1);
++        let responder = sign::verify(&ex.keys[0], server_pk).unwrap();
++        assert_ne!(responder[31] & 0x80, 0);
++        let signed = sign::verify(&ex.signed_params, server_pk).unwrap();
++        let params = KxParams::parse_from_bytes(signed.strip_prefix(PARAMS_DOMAIN).unwrap()).unwrap();
++        assert_eq!(params.pk.as_ref(), responder.as_slice());
++        assert_eq!(params.version, ex.version);
++        let (pk, sk) = box_::gen_keypair();
++        let key = secretbox::gen_key();
++        let sealed = box_::seal(&key.0, &box_::Nonce([0; 24]), &box_::PublicKey::from_slice(&responder).unwrap(), &sk);
++        let cipher = Cipher::new(key, &pk.0, &responder, true).unwrap();
++        let mut reply = RendezvousMessage::new();
++        reply.set_key_exchange(KeyExchange { keys: vec![Bytes::copy_from_slice(&pk.0), Bytes::from(sealed)], version, ..Default::default() });
++        (reply, cipher)
++    }
++
++    #[tokio::test]
++    async fn coalesced_handshake_and_request_then_moved_sink_response() {
++        init();
++        let (client, server) = connected().await;
++        let (pk, sk) = sign::gen_keypair();
++        let task = tokio::spawn(async move {
++            let mut server = Framed::new(server, SecureCodec::new());
++            assert!(handshake(&mut server, &sk).await.unwrap().is_none());
++            let (mut sink, mut reader) = server.split();
++            assert_eq!(&reader.next().await.unwrap().unwrap()[..], b"first request");
++            // A sink moved to an independent task retains the original codec/counters.
++            let writer = tokio::spawn(async move {
++                sink.send(Bytes::from_static(b"first response")).await.unwrap();
++                sink.send(Bytes::from_static(b"second response")).await.unwrap();
++            });
++            assert_eq!(&reader.next().await.unwrap().unwrap()[..], b"second request");
++            writer.await.unwrap();
++        });
++        let mut client = Framed::new(client, BytesCodec::new());
++        let offer = client.next().await.unwrap().unwrap();
++        let (reply, mut cipher) = client_exchange(&offer, &pk, 1);
++        let mut coalesced = BytesMut::new();
++        let mut codec = BytesCodec::new();
++        codec.encode(Bytes::from(reply.write_to_bytes().unwrap()), &mut coalesced).unwrap();
++        codec.encode(Bytes::from(cipher.enc(b"first request").unwrap()), &mut coalesced).unwrap();
++        codec.encode(Bytes::from(cipher.enc(b"second request").unwrap()), &mut coalesced).unwrap();
++        client.get_mut().write_all(&coalesced).await.unwrap();
++        for expected in [b"first response".as_slice(), b"second response".as_slice()] {
++            assert_eq!(cipher.dec(&client.next().await.unwrap().unwrap()).unwrap(), expected);
++        }
++        task.await.unwrap();
++    }
++
++    #[tokio::test]
++    async fn v0_and_malformed_exchange_fail_closed() {
++        init();
++        for malformed in [false, true] {
++            let (client, server) = connected().await;
++            let (pk, sk) = sign::gen_keypair();
++            let task = tokio::spawn(async move {
++                handshake(&mut Framed::new(server, SecureCodec::new()), &sk).await.is_err()
++            });
++            let mut client = Framed::new(client, BytesCodec::new());
++            let offer = client.next().await.unwrap().unwrap();
++            let (mut reply, _) = client_exchange(&offer, &pk, if malformed { 1 } else { 0 });
++            if malformed { reply.mut_key_exchange().keys[1] = Bytes::from_static(b"bad"); }
++            client.send(Bytes::from(reply.write_to_bytes().unwrap())).await.unwrap();
++            assert!(task.await.unwrap());
++        }
++    }
++
++    #[tokio::test]
++    async fn tokenless_plain_first_request_is_preserved() {
++        init();
++        let (client, server) = connected().await;
++        let (_, sk) = sign::gen_keypair();
++        let task = tokio::spawn(async move {
++            handshake(&mut Framed::new(server, SecureCodec::new()), &sk).await.unwrap().unwrap()
++        });
++        let mut client = Framed::new(client, BytesCodec::new());
++        client.next().await.unwrap().unwrap();
++        let mut request = RendezvousMessage::new();
++        request.set_test_nat_request(Default::default());
++        let bytes = request.write_to_bytes().unwrap();
++        client.send(Bytes::from(bytes.clone())).await.unwrap();
++        assert_eq!(&task.await.unwrap()[..], bytes.as_slice());
++    }
++}

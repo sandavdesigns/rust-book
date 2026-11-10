@@ -91,3 +91,7 @@ composer.phar
 .DS_Store
 Thumbs.db
 desktop.ini
+
+# Pinned companion sources fetched for isolated builds
+/experimental/secure-tcp-v1/upstream/
+/experimental/secure-tcp-v1/target/

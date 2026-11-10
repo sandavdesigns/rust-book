@@ -162,18 +162,21 @@ final class AdminController
 
         $username = $this->postValue('username');
         $password = $this->postValue('password');
-        $canonical = Security::canonicalUsername($username);
+        if (strlen($username) > 128 || strlen($password) > 4096) {
+            $this->renderError('Invalid login fields.', 400, null);
+            return;
+        }
         $remoteIp = $this->remoteIp();
 
-        if ($this->rateLimiter->isLimited($canonical, $remoteIp)) {
-            $this->rateLimiter->record($username, $remoteIp, false, 'admin_rate_limited');
+        $attemptId = $this->rateLimiter->reserveAttempt($username, $remoteIp);
+        if ($attemptId === null) {
             $this->render('login', array('title' => 'Admin Login', 'error' => 'Too many login attempts. Try again later.', 'username' => $username), 429, null);
             return;
         }
 
         $user = $this->users->findByUsername($username);
         if ($user === null || (int) $user['enabled'] !== 1 || (int) $user['is_admin'] !== 1 || !$this->hasher->verify($password, $user['password_hash'])) {
-            $this->rateLimiter->record($username, $remoteIp, false, 'admin_invalid_credentials');
+            $this->rateLimiter->finishAttempt($attemptId, false, 'admin_invalid_credentials');
             $this->render('login', array('title' => 'Admin Login', 'error' => 'Invalid administrator credentials.', 'username' => $username), 401, null);
             return;
         }
@@ -182,7 +185,7 @@ final class AdminController
             $this->users->updatePasswordHash((int) $user['id'], $this->hasher->hashPassword($password));
         }
 
-        $this->rateLimiter->record($username, $remoteIp, true, 'admin_success');
+        $this->rateLimiter->finishAttempt($attemptId, true, 'admin_success');
         $this->session->login((int) $user['id']);
         $this->flash('success', 'Signed in.');
         $this->redirect('/admin');
@@ -693,7 +696,7 @@ final class AdminController
 
     private function remoteIp()
     {
-        return isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '';
+        return HttpSecurity::remoteIp($this->config);
     }
 
     private function sendWebHeaders()

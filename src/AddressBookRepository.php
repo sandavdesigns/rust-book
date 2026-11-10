@@ -35,6 +35,7 @@ final class AddressBookRepository
                 'hostname' => (string) $entry['hostname'],
                 'platform' => (string) $entry['platform'],
                 'alias' => (string) $entry['alias'],
+                'note' => (string) $entry['note'],
                 'tags' => isset($entryTags[$entryId]) ? $entryTags[$entryId] : array(),
                 'hash' => (string) $entry['peer_hash']
             );
@@ -51,6 +52,7 @@ final class AddressBookRepository
 
         $pdo->beginTransaction();
         try {
+            $existingNotes = $this->loadNotesByRustDeskId($userId);
             $deleteEntries = $pdo->prepare('DELETE FROM address_book_entries WHERE user_id = :user_id');
             $deleteEntries->execute(array(':user_id' => (int) $userId));
             $deleteTags = $pdo->prepare('DELETE FROM address_book_tags WHERE user_id = :user_id');
@@ -74,8 +76,8 @@ final class AddressBookRepository
             }
 
             $insertEntry = $pdo->prepare(
-                'INSERT INTO address_book_entries(user_id, rustdesk_id, username, hostname, platform, alias, peer_hash, sort_order, created_at, updated_at)
-                 VALUES(:user_id, :rustdesk_id, :username, :hostname, :platform, :alias, :peer_hash, :sort_order, :created_at, :updated_at)'
+                'INSERT INTO address_book_entries(user_id, rustdesk_id, username, hostname, platform, alias, note, peer_hash, sort_order, created_at, updated_at)
+                 VALUES(:user_id, :rustdesk_id, :username, :hostname, :platform, :alias, :note, :peer_hash, :sort_order, :created_at, :updated_at)'
             );
             $insertEntryTag = $pdo->prepare(
                 'INSERT INTO address_book_entry_tags(entry_id, tag_id, sort_order)
@@ -90,6 +92,7 @@ final class AddressBookRepository
                     ':hostname' => $peer['hostname'],
                     ':platform' => $peer['platform'],
                     ':alias' => $peer['alias'],
+                    ':note' => $peer['note_provided'] ? $peer['note'] : (isset($existingNotes[$peer['id']]) ? $existingNotes[$peer['id']] : ''),
                     ':peer_hash' => $peer['hash'],
                     ':sort_order' => $entryIndex,
                     ':created_at' => $now,
@@ -242,8 +245,8 @@ final class AddressBookRepository
             $sortOrder = (int) $stmt->fetchColumn();
 
             $insert = $pdo->prepare(
-                'INSERT INTO address_book_entries(user_id, rustdesk_id, username, hostname, platform, alias, peer_hash, sort_order, created_at, updated_at)
-                 VALUES(:user_id, :rustdesk_id, :username, :hostname, :platform, :alias, "", :sort_order, :created_at, :updated_at)'
+                'INSERT INTO address_book_entries(user_id, rustdesk_id, username, hostname, platform, alias, note, peer_hash, sort_order, created_at, updated_at)
+                 VALUES(:user_id, :rustdesk_id, :username, :hostname, :platform, :alias, "", "", :sort_order, :created_at, :updated_at)'
             );
             $insert->execute(array(
                 ':user_id' => (int) $userId,
@@ -437,6 +440,20 @@ final class AddressBookRepository
         );
         $stmt->execute(array(':user_id' => (int) $userId));
         return $stmt->fetchAll();
+    }
+
+    private function loadNotesByRustDeskId($userId)
+    {
+        $stmt = $this->db->pdo()->prepare(
+            'SELECT rustdesk_id, note FROM address_book_entries WHERE user_id = :user_id'
+        );
+        $stmt->execute(array(':user_id' => (int) $userId));
+
+        $notes = array();
+        foreach ($stmt->fetchAll() as $entry) {
+            $notes[(string) $entry['rustdesk_id']] = (string) $entry['note'];
+        }
+        return $notes;
     }
 
     private function loadEntryTags($userId)

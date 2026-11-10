@@ -1,0 +1,12 @@
+{
+  "server_commit": "73523b31cfd25d77dee862e6fc9f5e1fb5e485ef",
+  "server_submodule_commit": "83419b6549636ee39dacef7776c473f5802e08d6",
+  "v1_reference_submodule_commit": "fae47e024dd83cef6aaecde0aa7d11731df11649",
+  "sha256": {
+    "rustdesk-server-1.1.16/src/lib.rs": "0788f3c4428900ed4120e385f91249c07dc70b22d106eb6c1bd5e1581d954683",
+    "rustdesk-server-1.1.16/src/rendezvous_server.rs": "f73608ebdf5bc35fbc77dadb4abe970df6fd63e0a6aa81e9c7bfaf07365271d4",
+    "rustdesk-server-1.1.16/Cargo.lock": "cc121631f7596d4662a638cccde70b63a403a227d3c68c82da001bd021c83365",
+    "hbb_common-83419b6549636ee39dacef7776c473f5802e08d6/protos/rendezvous.proto": "819f079ecc625fb25ffb191f869d371629b0a2ed1bf7d5be05bb8acfd88fbe54",
+    "hbb_common-fae47e024dd83cef6aaecde0aa7d11731df11649/src/tcp.rs": "f354dc407bf30ff13f8289c4efe1e3f031333748e0da67ec401830f74285debc"
+  }
+}

@@ -38,7 +38,7 @@ final class RustDeskApi
         if ($method === 'GET' && ($path === '/' || $path === '/health')) {
             $this->sendJson(array(
                 'name' => 'rust-book',
-                'version' => '0.1.0',
+                'version' => '0.1.1-dev',
                 'phase' => '4',
                 'php_min' => '7.3',
                 'storage' => 'sqlite',
@@ -134,19 +134,23 @@ final class RustDeskApi
     {
         $this->db->requireInitialized();
         $body = $this->readJsonBody();
-        $username = isset($body['username']) ? (string) $body['username'] : '';
-        $password = isset($body['password']) ? (string) $body['password'] : '';
-        $canonical = Security::canonicalUsername($username);
+        if (!isset($body['username'], $body['password'])
+            || !is_string($body['username']) || !is_string($body['password'])
+            || strlen($body['username']) > 128 || strlen($body['password']) > 4096) {
+            $this->sendJson(array('error' => 'Invalid login fields'), 400);
+        }
+        $username = $body['username'];
+        $password = $body['password'];
         $remoteIp = $this->remoteIp();
 
-        if ($this->rateLimiter->isLimited($canonical, $remoteIp)) {
-            $this->rateLimiter->record($username, $remoteIp, false, 'rate_limited');
+        $attemptId = $this->rateLimiter->reserveAttempt($username, $remoteIp);
+        if ($attemptId === null) {
             $this->sendJson(array('error' => 'Too many login attempts'), 429);
         }
 
         $user = $this->users->findByUsername($username);
         if ($user === null || (int) $user['enabled'] !== 1 || !$this->hasher->verify($password, $user['password_hash'])) {
-            $this->rateLimiter->record($username, $remoteIp, false, 'invalid_credentials');
+            $this->rateLimiter->finishAttempt($attemptId, false, 'invalid_credentials');
             $this->sendJson(array('error' => 'Invalid credentials'), 401);
         }
 
@@ -156,7 +160,7 @@ final class RustDeskApi
         }
 
         $this->users->markLogin((int) $user['id']);
-        $this->rateLimiter->record($username, $remoteIp, true, 'success');
+        $this->rateLimiter->finishAttempt($attemptId, true, 'success');
 
         $token = $this->tokens->issue((int) $user['id'], $body, $this->tokenLifetimeDays());
 
@@ -274,7 +278,7 @@ final class RustDeskApi
 
     private function readJsonBody()
     {
-        $raw = file_get_contents('php://input');
+        $raw = HttpSecurity::readBody();
         if ($raw === false || trim($raw) === '') {
             $this->sendJson(array('error' => 'Invalid JSON'), 400);
         }
@@ -289,7 +293,7 @@ final class RustDeskApi
 
     private function readJsonBodyAllowingEmpty()
     {
-        $raw = file_get_contents('php://input');
+        $raw = HttpSecurity::readBody();
         if ($raw === false || trim($raw) === '') {
             return array();
         }
@@ -367,7 +371,7 @@ final class RustDeskApi
 
     private function remoteIp()
     {
-        return isset($_SERVER['REMOTE_ADDR']) ? (string) $_SERVER['REMOTE_ADDR'] : '';
+        return HttpSecurity::remoteIp($this->config);
     }
 
     private function sendJson($data, $status = 200)

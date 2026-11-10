@@ -1,0 +1,52 @@
+diff --git a/flutter/lib/models/ab_model.dart b/flutter/lib/models/ab_model.dart
+index 001887c..f6b29ad 100644
+--- a/flutter/lib/models/ab_model.dart
++++ b/flutter/lib/models/ab_model.dart
+@@ -1159,8 +1159,12 @@ class LegacyAb extends BaseAb {
+ 
+   @override
+   Future<bool> changeNote({required String id, required String note}) async {
+-    // no need to implement
+-    return false;
++    final it = peers.where((element) => element.id == id);
++    if (it.isEmpty) {
++      return false;
++    }
++    it.first.note = note;
++    return await pushAb();
+   }
+ 
+   @override
+@@ -1308,7 +1312,7 @@ class LegacyAb extends BaseAb {
+ 
+   Map<String, dynamic> _serialize() {
+     final peersJsonData =
+-        peers.map((e) => e.toCustomJson(includingHash: true)).toList();
++        peers.map((e) => e.toCustomJson(includingHash: true, includingNote: true)).toList();
+     for (var e in tags) {
+       if (tagColors[e] == null) {
+         tagColors[e] = str2color2(e, existing: tagColors.values.toList()).value;
+diff --git a/flutter/lib/models/peer_model.dart b/flutter/lib/models/peer_model.dart
+index 3171b37..455ef77 100644
+--- a/flutter/lib/models/peer_model.dart
++++ b/flutter/lib/models/peer_model.dart
+@@ -67,7 +67,8 @@ class Peer {
+     };
+   }
+ 
+-  Map<String, dynamic> toCustomJson({required bool includingHash}) {
++  Map<String, dynamic> toCustomJson(
++      {required bool includingHash, bool includingNote = false}) {
+     var res = <String, dynamic>{
+       "id": id,
+       "username": username,
+@@ -79,6 +80,9 @@ class Peer {
+     if (includingHash) {
+       res['hash'] = hash;
+     }
++    if (includingNote) {
++      res['note'] = note;
++    }
+     return res;
+   }
+ 

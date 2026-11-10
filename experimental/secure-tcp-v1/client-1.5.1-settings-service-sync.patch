@@ -1,0 +1,438 @@
+diff --git a/flutter/lib/common.dart b/flutter/lib/common.dart
+--- a/flutter/lib/common.dart
++++ b/flutter/lib/common.dart
+@@ -3627,12 +3627,31 @@
+   }
+   final oldApiServer = await bind.mainGetApiServer();
+ 
+-  // should set one by one
+-  await bind.mainSetOption(
+-      key: 'custom-rendezvous-server', value: config.idServer);
+-  await bind.mainSetOption(key: 'relay-server', value: config.relayServer);
+-  await bind.mainSetOption(key: 'api-server', value: config.apiServer);
+-  await bind.mainSetOption(key: 'key', value: config.key);
++  try {
++    if (isDesktop) {
++      // Send one delta: a background options refresh must not undo a field.
++      await bind.mainSetOptions(json: jsonEncode({
++        'custom-rendezvous-server': config.idServer,
++        'relay-server': config.relayServer,
++        'api-server': config.apiServer,
++        'key': config.key,
++      }));
++    } else {
++      await bind.mainSetOption(
++          key: 'custom-rendezvous-server', value: config.idServer);
++      await bind.mainSetOption(key: 'relay-server', value: config.relayServer);
++      await bind.mainSetOption(key: 'api-server', value: config.apiServer);
++      await bind.mainSetOption(key: 'key', value: config.key);
++    }
++  } catch (e) {
++    final message = '${translate("Failed to save settings")}: $e';
++    if (errMsgs != null && errMsgs.isNotEmpty) {
++      errMsgs[0].value = message;
++    } else {
++      showToast(message);
++    }
++    return false;
++  }
+   final newApiServer = await bind.mainGetApiServer();
+   if (oldApiServer.isNotEmpty &&
+       oldApiServer != newApiServer &&
+diff --git a/src/flutter_ffi.rs b/src/flutter_ffi.rs
+--- a/src/flutter_ffi.rs
++++ b/src/flutter_ffi.rs
+@@ -1119,7 +1119,19 @@
+         }
+     }
+     if !map.is_empty() {
+-        try_set_options(map)?;
++        const SERVER_OPTION_KEYS: [&str; 4] = [
++            "custom-rendezvous-server",
++            "relay-server",
++            "api-server",
++            "key",
++        ];
++        if map.len() == SERVER_OPTION_KEYS.len()
++            && SERVER_OPTION_KEYS.iter().all(|key| map.contains_key(*key))
++        {
++            set_server_options(map)?;
++        } else {
++            try_set_options(map)?;
++        }
+     }
+     Ok(())
+ }
+diff --git a/src/ipc.rs b/src/ipc.rs
+--- a/src/ipc.rs
++++ b/src/ipc.rs
+@@ -92,6 +92,13 @@
+ 
+ // IPC actions here.
+ pub const IPC_ACTION_CLOSE: &str = "close";
++const SERVER_CONFIG_NAME: &str = "server-config";
++const SERVER_OPTION_KEYS: [&str; 4] = [
++    "custom-rendezvous-server",
++    "relay-server",
++    "api-server",
++    "key",
++];
+ #[cfg(target_os = "windows")]
+ const PORTABLE_SERVICE_IPC_HANDSHAKE_TIMEOUT_MS: u64 = 3_000;
+ #[cfg(target_os = "windows")]
+@@ -101,6 +108,16 @@
+ #[cfg(target_os = "windows")]
+ const _: () = assert!(IPC_TOKEN_LEN % 2 == 0);
+ pub static EXIT_RECV_CLOSE: AtomicBool = AtomicBool::new(true);
++
++pub enum ServerOptionsUpdate {
++    Updated,
++    Unavailable,
++}
++
++fn is_server_options_delta(options: &HashMap<String, String>) -> bool {
++    options.len() == SERVER_OPTION_KEYS.len()
++        && SERVER_OPTION_KEYS.iter().all(|key| options.contains_key(*key))
++}
+ 
+ #[cfg(any(target_os = "linux", target_os = "macos"))]
+ thread_local! {
+@@ -1063,6 +1080,38 @@
+                     crate::audio_service::set_voice_call_input_device(Some(value), true);
+                 } else if name == "unlock-pin" {
+                     Config::set_unlock_pin(&value);
++                } else if name == SERVER_CONFIG_NAME {
++                    let delta = match serde_json::from_str::<HashMap<String, String>>(&value) {
++                        Ok(delta) if is_server_options_delta(&delta) => delta,
++                        _ => {
++                            allow_err!(stream.send(&Data::SecurityConfigError(
++                                "Invalid server configuration update".to_owned(),
++                            )).await);
++                            return;
++                        }
++                    };
++                    let _chk = CheckIfRestart::new();
++                    let _nat = CheckTestNatType::new();
++                    if let Err(error) = crate::trusted_devices::config::update(move || {
++                        Config::set_server_options(delta)
++                    })
++                    .await
++                    {
++                        allow_err!(stream.send(&Data::SecurityConfigError(error.to_string())).await);
++                        return;
++                    }
++                    let effective: HashMap<String, String> = SERVER_OPTION_KEYS
++                        .iter()
++                        .map(|key| (key.to_string(), Config::get_option(key)))
++                        .collect();
++                    let effective = match serde_json::to_string(&effective) {
++                        Ok(effective) => effective,
++                        Err(error) => {
++                            allow_err!(stream.send(&Data::SecurityConfigError(error.to_string())).await);
++                            return;
++                        }
++                    };
++                    allow_err!(stream.send(&Data::Config((name.clone(), Some(effective)))).await);
+                 } else {
+                     return;
+                 }
+@@ -1839,6 +1888,42 @@
+     set_permanent_password_with_ack_async(v).await
+ }
+ 
++#[tokio::main(flavor = "current_thread")]
++pub async fn set_server_options(
++    delta: HashMap<String, String>,
++) -> ResultType<ServerOptionsUpdate> {
++    if !is_server_options_delta(&delta) {
++        bail!("Expected exactly the four server configuration options");
++    }
++    let ms_timeout = 1_000;
++    let mut c = match connect(ms_timeout, "").await {
++        Ok(connection) => connection,
++        Err(_) => return Ok(ServerOptionsUpdate::Unavailable),
++    };
++    let request = serde_json::to_string(&delta)?;
++    c.send(&Data::Config((SERVER_CONFIG_NAME.to_owned(), Some(request))))
++        .await?;
++    match c.next_timeout(ms_timeout).await? {
++        Some(Data::Config((name, Some(response)))) if name == SERVER_CONFIG_NAME => {
++            let response = match serde_json::from_str::<HashMap<String, String>>(&response) {
++                Ok(response) => response,
++                Err(_) => bail!("Invalid server configuration confirmation"),
++            };
++            if is_server_options_delta(&response)
++                && delta.iter().all(|(key, value)| {
++                    value.is_empty() || response.get(key).is_some_and(|actual| actual == value)
++                })
++            {
++                Ok(ServerOptionsUpdate::Updated)
++            } else {
++                bail!("Server configuration confirmation did not match the request");
++            }
++        }
++        Some(Data::SecurityConfigError(error)) => bail!(error),
++        _ => bail!("The host did not confirm the server configuration update"),
++    }
++}
++
+ async fn set_permanent_password_with_ack_async(v: String) -> ResultType<bool> {
+     // The daemon ACK/NACK is expected quickly since it applies the config in-process.
+     let ms_timeout = 1_000;
+diff --git a/src/ui_interface.rs b/src/ui_interface.rs
+--- a/src/ui_interface.rs
++++ b/src/ui_interface.rs
+@@ -435,6 +435,45 @@
+     }
+     #[cfg(any(target_os = "android", target_os = "ios"))]
+     crate::trusted_devices::config::set_options(m)?;
++    Ok(())
++}
++
++pub fn set_server_options(delta: HashMap<String, String>) -> hbb_common::ResultType<()> {
++    const KEYS: [&str; 4] = [
++        "custom-rendezvous-server",
++        "relay-server",
++        "api-server",
++        "key",
++    ];
++    if delta.len() != KEYS.len() || !KEYS.iter().all(|key| delta.contains_key(*key)) {
++        hbb_common::bail!("Expected exactly the four server configuration options");
++    }
++    #[cfg(not(any(target_os = "android", target_os = "ios")))]
++    {
++        match ipc::set_server_options(delta.clone())? {
++            ipc::ServerOptionsUpdate::Updated => {
++                Config::set_server_options(delta.clone())?;
++            }
++            ipc::ServerOptionsUpdate::Unavailable if !crate::platform::is_installed() => {
++                let _chk = ipc::CheckIfRestart::new();
++                let _nat = crate::CheckTestNatType::new();
++                Config::set_server_options(delta.clone())?;
++            }
++            ipc::ServerOptionsUpdate::Unavailable => {
++                hbb_common::bail!("The installed host is unavailable; server settings were not changed");
++            }
++        }
++        let mut options = OPTIONS.lock().unwrap();
++        for (key, value) in delta {
++            if value.is_empty() {
++                options.remove(&key);
++            } else {
++                options.insert(key, value);
++            }
++        }
++    }
++    #[cfg(any(target_os = "android", target_os = "ios"))]
++    Config::set_server_options(delta)?;
+     Ok(())
+ }
+ 
+diff --git a/libs/hbb_common/src/config.rs b/libs/hbb_common/src/config.rs
+--- a/libs/hbb_common/src/config.rs
++++ b/libs/hbb_common/src/config.rs
+@@ -51,6 +51,12 @@
+ pub const COMPRESS_LEVEL: i32 = 3;
+ const SERIAL: i32 = 3;
+ const CONFIG_STORE_LOG_INTERVAL: Duration = Duration::from_secs(30);
++const SERVER_OPTION_KEYS: [&str; 4] = [
++    "custom-rendezvous-server",
++    "relay-server",
++    "api-server",
++    "key",
++];
+ 
+ #[cfg(target_os = "macos")]
+ lazy_static::lazy_static! {
+@@ -521,8 +527,12 @@
+     }
+ 
+     fn store(&self) {
++        self.try_store_path(Self::file()).ok();
++    }
++
++    fn try_store_path(&self, path: PathBuf) -> crate::ResultType<()> {
+         let mut config = self.clone();
+-        let stored = match try_load_path_for_store::<Self>(Self::file()) {
++        let stored = match try_load_path_for_store::<Self>(path.clone()) {
+             Ok(mut stored) => {
+                 if stored.trusted_devices_v2().is_err() {
+                     crate::throttled_log!(
+@@ -541,7 +551,7 @@
+                     "Failed to read config2; skipping save: {}",
+                     err
+                 );
+-                return;
++                return Err(err);
+             }
+         };
+         // Ordinary settings must not restore grants from a stale snapshot.
+@@ -559,7 +569,52 @@
+         }
+         config.unlock_pin =
+             keep_encrypted_storage_if_plaintext_unchanged(&config.unlock_pin, &stored.unlock_pin);
+-        Config::store_(&config, "2");
++        store_path(path, &config).map_err(|err| {
++            log::error!("Failed to store 2 config: {err}");
++            err
++        })
++    }
++
++    fn with_server_options(
++        &self,
++        delta: HashMap<String, String>,
++        overwrite: &HashMap<String, String>,
++        defaults: &HashMap<String, String>,
++    ) -> crate::ResultType<Self> {
++        if delta.len() != SERVER_OPTION_KEYS.len()
++            || !SERVER_OPTION_KEYS.iter().all(|key| delta.contains_key(*key))
++        {
++            return Err(anyhow!(
++                "Expected exactly the four server configuration options"
++            ));
++        }
++        let mut candidate = self.clone();
++        for (key, value) in delta {
++            if overwrite.get(&key).is_some_and(|enforced| enforced != &value) {
++                return Err(anyhow!("Server configuration option is enforced: {key}"));
++            }
++            if value.is_empty() || overwrite.contains_key(&key) || defaults.get(&key) == Some(&value) {
++                candidate.options.remove(&key);
++            } else {
++                candidate.options.insert(key, value);
++            }
++        }
++        Ok(candidate)
++    }
++
++    fn set_server_options(
++        &mut self,
++        delta: HashMap<String, String>,
++        path: PathBuf,
++    ) -> crate::ResultType<()> {
++        let candidate = self.with_server_options(
++            delta,
++            &OVERWRITE_SETTINGS.read().unwrap(),
++            &DEFAULT_SETTINGS.read().unwrap(),
++        )?;
++        candidate.try_store_path(path)?;
++        *self = candidate;
++        Ok(())
+     }
+ 
+     pub fn get_trusted_devices_v2() -> crate::ResultType<String> {
+@@ -1376,6 +1431,13 @@
+         }
+         config.options = v;
+         config.store();
++    }
++
++    pub fn set_server_options(delta: HashMap<String, String>) -> crate::ResultType<()> {
++        CONFIG2
++            .write()
++            .unwrap()
++            .set_server_options(delta, Config2::file())
+     }
+ 
+     pub fn get_option(k: &str) -> String {
+@@ -3102,6 +3164,100 @@
+         let _guard = CONFIG_STATE_TEST_LOCK.lock().unwrap();
+         let _state_guard = ConfigStateTestGuard::new(config, hard_settings);
+         test()
++    }
++
++    #[test]
++    fn server_options_merge_preserves_unrelated_configuration() {
++        let current = Config2 {
++            unlock_pin: "test-pin".to_owned(),
++            trusted_devices: "test-grants".to_owned(),
++            options: HashMap::from([
++                ("relay-server".to_owned(), "old.example.test:21117".to_owned()),
++                ("api-server".to_owned(), "https://old.example.test".to_owned()),
++                (
++                    "verification-method".to_owned(),
++                    "use-permanent-password".to_owned(),
++                ),
++                ("2fa".to_owned(), "test-2fa".to_owned()),
++            ]),
++            ..Default::default()
++        };
++        let delta = HashMap::from([
++            (
++                "custom-rendezvous-server".to_owned(),
++                "new.example.test:21116".to_owned(),
++            ),
++            ("relay-server".to_owned(), "new.example.test:21117".to_owned()),
++            ("api-server".to_owned(), String::new()),
++            ("key".to_owned(), "test-public-key".to_owned()),
++        ]);
++        let mut expected = current.clone();
++        expected.options.insert(
++            "custom-rendezvous-server".to_owned(),
++            "new.example.test:21116".to_owned(),
++        );
++        expected.options.insert(
++            "relay-server".to_owned(),
++            "new.example.test:21117".to_owned(),
++        );
++        expected.options.remove("api-server");
++        expected
++            .options
++            .insert("key".to_owned(), "test-public-key".to_owned());
++        let no_policy = HashMap::new();
++        assert_eq!(
++            current
++                .with_server_options(delta.clone(), &no_policy, &no_policy)
++                .unwrap(),
++            expected
++        );
++
++        let enforced = HashMap::from([("relay-server".to_owned(), "fixed.example.test".to_owned())]);
++        assert!(current
++            .with_server_options(delta.clone(), &enforced, &no_policy)
++            .is_err());
++        let defaults = HashMap::from([("relay-server".to_owned(), delta["relay-server"].clone())]);
++        let defaulted = current
++            .with_server_options(delta.clone(), &no_policy, &defaults)
++            .unwrap();
++        expected.options.remove("relay-server");
++        assert_eq!(defaulted, expected);
++
++        let mut invalid = delta;
++        invalid.remove("key");
++        assert!(current
++            .with_server_options(invalid.clone(), &no_policy, &no_policy)
++            .is_err());
++        invalid.insert("verification-method".to_owned(), String::new());
++        assert!(current
++            .with_server_options(invalid, &no_policy, &no_policy)
++            .is_err());
++    }
++
++    #[test]
++    fn server_options_storage_failure_does_not_publish_configuration() {
++        let mut current = Config2 {
++            options: HashMap::from([(
++                "relay-server".to_owned(),
++                "old.example.test:21117".to_owned(),
++            )]),
++            ..Default::default()
++        };
++        let original = current.clone();
++        let delta = SERVER_OPTION_KEYS
++            .iter()
++            .map(|key| ((*key).to_owned(), "new.example.test".to_owned()))
++            .collect();
++        let blocker = std::env::temp_dir().join(format!(
++            "rustdesk-server-options-{}-{}",
++            std::process::id(),
++            rand::random::<u64>()
++        ));
++        fs::write(&blocker, b"not a directory").unwrap();
++        let result = current.set_server_options(delta, blocker.join("config.toml"));
++        fs::remove_file(blocker).unwrap();
++        assert!(result.is_err());
++        assert_eq!(current, original);
+     }
+ 
+     #[test]

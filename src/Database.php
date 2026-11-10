@@ -24,12 +24,23 @@ final class Database
         $path = $this->config->get('database_path');
         if ($path !== ':memory:') {
             $dir = dirname($path);
-            if (!is_dir($dir) && !mkdir($dir, 0770, true) && !is_dir($dir)) {
+            if (!is_dir($dir) && !mkdir($dir, 0700, true) && !is_dir($dir)) {
                 throw new RuntimeException('Database directory is not writable: ' . $dir);
             }
         }
 
-        $pdo = new PDO('sqlite:' . $path);
+        if ($path !== ':memory:') {
+            $this->secureFilePermissions($path);
+        }
+        $oldMask = umask(0077);
+        try {
+            $pdo = new PDO('sqlite:' . $path);
+        } finally {
+            umask($oldMask);
+        }
+        if ($path !== ':memory:') {
+            $this->secureFilePermissions($path);
+        }
         $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
         $pdo->setAttribute(PDO::ATTR_DEFAULT_FETCH_MODE, PDO::FETCH_ASSOC);
         $pdo->setAttribute(PDO::ATTR_EMULATE_PREPARES, false);
@@ -87,10 +98,23 @@ final class Database
         $this->pdo()->exec('PRAGMA wal_checkpoint(FULL)');
         $safeLabel = preg_replace('/[^A-Za-z0-9_.-]/', '-', (string) $label);
         $backupPath = $path . '.bak-' . gmdate('Ymd-His') . '-' . $safeLabel;
-        if (!copy($path, $backupPath)) {
-            throw new RuntimeException('Could not create SQLite backup: ' . $backupPath);
+        $oldMask = umask(0077);
+        try {
+            if (!copy($path, $backupPath)) {
+                throw new RuntimeException('Could not create SQLite backup: ' . $backupPath);
+            }
+            $this->secureFilePermissions($backupPath);
+        } finally {
+            umask($oldMask);
         }
 
         return $backupPath;
     }
+    private function secureFilePermissions($path)
+    {
+        if (DIRECTORY_SEPARATOR === '/' && is_file($path) && !chmod($path, 0600)) {
+            throw new RuntimeException('SQLite files must be owned by the PHP service user and private.');
+        }
+    }
+
 }

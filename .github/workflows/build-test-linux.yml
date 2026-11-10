@@ -1,0 +1,204 @@
+name: Build isolated RustDesk Linux test client
+
+on:
+  push:
+    paths:
+      - '.github/workflows/build-test-linux.yml'
+      - 'experimental/secure-tcp-v1/prepare-test-client.py'
+      - 'experimental/secure-tcp-v1/client-1.5.1-strict.patch'
+      - 'experimental/secure-tcp-v1/client-1.5.1-address-book-notes.patch'
+      - 'experimental/secure-tcp-v1/client-1.5.1-settings-service-sync.patch'
+  workflow_dispatch:
+
+concurrency:
+  group: rustdesk-test-linux-${{ github.ref }}
+  cancel-in-progress: true
+
+permissions:
+  contents: read
+
+jobs:
+  generate-bridge:
+    name: Generate Flutter bridge
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Check out pinned public RustDesk source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
+        with:
+          repository: rustdesk/rustdesk
+          ref: 23e5bb471a040d62f0a6ad52591fb30784265b73
+          path: client
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Install bridge prerequisites
+        run: |
+          sudo apt-get update -y
+          sudo apt-get install -y clang cmake gcc g++ libclang-dev libgtk-3-dev llvm-dev nasm ninja-build pkg-config
+
+      - name: Install Rust 1.75 for bridge generation
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1.85.0
+        with:
+          toolchain: '1.75'
+          targets: x86_64-unknown-linux-gnu
+          components: rustfmt
+
+      - name: Cache bridge Rust build data
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.7.8
+        with:
+          workspaces: client
+          prefix-key: rustdesk-1-5-1-linux-bridge
+
+      - name: Install Flutter 3.22.3 for bridge generation
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.21.0
+        with:
+          channel: stable
+          flutter-version: '3.22.3'
+          cache: true
+
+      - name: Generate bridge artifacts as upstream does
+        working-directory: client
+        run: |
+          cargo install cargo-expand --version 1.0.95 --locked
+          cargo install flutter_rust_bridge_codegen --version 1.80.1 --features uuid --locked
+          sed -i -e 's/extended_text: 14.0.0/extended_text: 13.0.0/g' flutter/pubspec.yaml
+          (cd flutter && flutter pub get)
+          ~/.cargo/bin/flutter_rust_bridge_codegen --rust-input ./src/flutter_ffi.rs --dart-output ./flutter/lib/generated_bridge.dart --c-output ./flutter/macos/Runner/bridge_generated.h
+          cp ./flutter/macos/Runner/bridge_generated.h ./flutter/ios/Runner/bridge_generated.h
+
+      - name: Upload generated bridge
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
+        with:
+          name: rustdesk-1-5-1-linux-bridge
+          if-no-files-found: error
+          path: |
+            client/src/bridge_generated.rs
+            client/src/bridge_generated.io.rs
+            client/flutter/lib/generated_bridge.dart
+            client/flutter/lib/generated_bridge.freezed.dart
+            client/flutter/macos/Runner/bridge_generated.h
+            client/flutter/ios/Runner/bridge_generated.h
+
+  build-linux-x64:
+    name: Build Linux x64 test bundle
+    needs: generate-bridge
+    runs-on: ubuntu-22.04
+    timeout-minutes: 90
+    steps:
+      - name: Check out this repository
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Check out pinned public RustDesk source
+        uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5 # v4.2.2
+        with:
+          repository: rustdesk/rustdesk
+          ref: 23e5bb471a040d62f0a6ad52591fb30784265b73
+          path: client
+          submodules: recursive
+          persist-credentials: false
+
+      - name: Verify and apply strict patch and test-client isolation
+        run: |
+          python3 experimental/secure-tcp-v1/prepare-test-client.py \
+            --source client \
+            --strict-patch experimental/secure-tcp-v1/client-1.5.1-strict.patch \
+            --notes-patch experimental/secure-tcp-v1/client-1.5.1-address-book-notes.patch \
+            --settings-patch experimental/secure-tcp-v1/client-1.5.1-settings-service-sync.patch
+
+      - name: Restore generated bridge
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c # v4.3.0
+        with:
+          name: rustdesk-1-5-1-linux-bridge
+          path: client
+
+      - name: Install native Linux dependencies from upstream build job
+        run: |
+          sudo apt-get update -y
+          # Ubuntu runner LLVM dev package conflicts with GStreamer's libunwind-dev.
+          # This is an ephemeral build runner, never an end-user computer.
+          mapfile -t task_unwind_packages < <(dpkg-query -W -f='${Package} ${Status}\n' 'libunwind-*-dev' 2>/dev/null | awk '$NF == "installed" {print $1}' || true)
+          if ((${#task_unwind_packages[@]})); then
+            sudo apt-get remove -y "${task_unwind_packages[@]}"
+          fi
+          sudo apt-get install -y libunwind-dev
+          sudo apt-get install -y \
+            build-essential clang cmake curl gcc g++ \
+            libasound2-dev libayatana-appindicator3-dev libclang-dev \
+            libgstreamer1.0-dev libgstreamer-plugins-base1.0-dev libgtk-3-dev \
+            libpulse-dev libssl-dev libva-dev libwayland-dev \
+            libxcb-randr0-dev libxcb-shape0-dev libxcb-xfixes0-dev libxdo-dev libxfixes-dev \
+            llvm-dev nasm ninja-build pkg-config python3 unzip wayland-protocols wget xz-utils
+
+      - name: Install Flutter 3.24.5 and upstream patch
+        uses: subosito/flutter-action@1a449444c387b1966244ae4d4f8c696479add0b2 # v2.21.0
+        with:
+          channel: stable
+          flutter-version: '3.24.5'
+          cache: true
+
+      - name: Patch Flutter SDK as pinned upstream workflow does
+        working-directory: client
+        shell: bash
+        run: |
+          flutter_root="$(dirname "$(dirname "$(command -v flutter)")")"
+          patch_file="$GITHUB_WORKSPACE/client/.github/patches/flutter_3.24.4_dropdown_menu_enableFilter.diff"
+          if git -C "$flutter_root" apply --check "$patch_file"; then
+            git -C "$flutter_root" apply "$patch_file"
+          elif git -C "$flutter_root" apply --reverse --check "$patch_file"; then
+            echo "Pinned Flutter workaround already present in restored SDK cache"
+          else
+            echo "Flutter SDK does not match the expected workaround state" >&2
+            exit 1
+          fi
+
+      - name: Install Rust 1.75 for native Linux build
+        uses: dtolnay/rust-toolchain@e97e2d8cc328f1b50210efc529dca0028893a2d9 # v1.85.0
+        with:
+          toolchain: '1.75'
+          targets: x86_64-unknown-linux-gnu
+          components: rustfmt
+
+      - name: Cache Rust build data
+        uses: Swatinem/rust-cache@e18b497796c12c097a38f9edb9d0641fb99eee32 # v2.7.8
+        with:
+          workspaces: client
+          prefix-key: rustdesk-1-5-1-linux-x64
+
+      - name: Set up pinned vcpkg
+        uses: lukka/run-vcpkg@b1a0dd252f06b9e25b3c022a9a03bd7a427fb6a2 # v11.5.0
+        with:
+          vcpkgGitCommitId: 9e593bb18ea69cc5095e012465dcd675a822ed0d
+          vcpkgJsonGlob: client/vcpkg.json
+          doNotCache: false
+
+      - name: Install x64 Linux vcpkg dependencies
+        working-directory: client
+        run: |
+          "$VCPKG_ROOT/vcpkg" install --triplet x64-linux --x-install-root="$VCPKG_ROOT/installed"
+
+      - name: Build relocatable Flutter bundle
+        working-directory: client
+        run: |
+          cargo build --locked --lib --features hwcodec,flutter,unix-file-copy-paste --release
+          (cd flutter && flutter build linux --release)
+          test -x flutter/build/linux/x64/release/bundle/rustdesk
+          test -f flutter/build/linux/x64/release/bundle/lib/librustdesk.so
+
+      - name: Archive bundle without package-manager metadata
+        working-directory: client/flutter/build/linux/x64/release
+        run: tar -czf "$GITHUB_WORKSPACE/RustDeskLab-linux-x64-bundle.tar.gz" bundle
+
+      - name: Upload isolated Linux bundle
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a # v4.6.2
+        with:
+          name: RustDeskLab-linux-x64-bundle
+          if-no-files-found: error
+          path: RustDeskLab-linux-x64-bundle.tar.gz

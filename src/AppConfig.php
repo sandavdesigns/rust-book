@@ -18,6 +18,8 @@ final class AppConfig
     {
         $rootDir = rtrim(str_replace('\\', '/', (string) $rootDir), '/');
         $defaults = array(
+            'require_https' => true,
+            'trusted_proxies' => array(),
             'database_path' => $rootDir . '/data/rustdesk-api.sqlite3',
             'token_lifetime_days' => 90,
             'sqlite_busy_timeout_ms' => 5000,
@@ -46,6 +48,8 @@ final class AppConfig
         }
 
         $envMap = array(
+            'require_https' => 'RUSTDESK_API_REQUIRE_HTTPS',
+            'trusted_proxies' => 'RUSTDESK_API_TRUSTED_PROXIES',
             'database_path' => 'RUSTDESK_API_DATABASE_PATH',
             'token_lifetime_days' => 'RUSTDESK_API_TOKEN_LIFETIME_DAYS',
             'sqlite_busy_timeout_ms' => 'RUSTDESK_API_SQLITE_BUSY_TIMEOUT_MS',
@@ -61,6 +65,26 @@ final class AppConfig
                 $values[$key] = $envValue;
                 $explicit[$key] = true;
             }
+        }
+
+        $values['require_https'] = filter_var($values['require_https'], FILTER_VALIDATE_BOOLEAN, FILTER_NULL_ON_FAILURE);
+        if ($values['require_https'] === null) {
+            throw new RuntimeException('require_https must be a boolean.');
+        }
+        $proxies = $values['trusted_proxies'];
+        if (is_string($proxies)) {
+            $proxies = trim($proxies) === '' ? array() : explode(',', $proxies);
+        }
+        if (!is_array($proxies)) {
+            throw new RuntimeException('trusted_proxies must be IP addresses.');
+        }
+        $values['trusted_proxies'] = array();
+        foreach ($proxies as $proxy) {
+            $proxy = trim((string) $proxy);
+            if (filter_var($proxy, FILTER_VALIDATE_IP) === false) {
+                throw new RuntimeException('trusted_proxies must contain exact IP addresses.');
+            }
+            $values['trusted_proxies'][] = $proxy;
         }
 
         $values['database_path'] = self::resolvePath($rootDir, (string) $values['database_path']);

@@ -29,6 +29,8 @@ command -v php >/dev/null
 command -v curl >/dev/null
 
 export RUSTDESK_API_DATABASE_PATH="$DB_PATH"
+# This disposable test server is bound to loopback only. Production defaults to HTTPS.
+export RUSTDESK_API_REQUIRE_HTTPS=0
 
 php scripts/migrate.php >/dev/null
 php scripts/migrate.php >/dev/null
