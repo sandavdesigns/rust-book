@@ -1,0 +1,17 @@
+name: Check public own-device test service
+on:
+  push:
+    branches: [fix/security-and-compatibility]
+    paths: [.github/workflows/check-public.yml, experimental/check-public.py]
+permissions:
+  contents: read
+jobs:
+  public-connectivity:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 3
+    steps:
+      - uses: actions/checkout@34e114876b0b11c390a56381ad16ebd13914f8d5
+        with:
+          persist-credentials: false
+      - name: Probe public TCP UDP HTTPS and authentication boundary
+        run: python3 experimental/check-public.py
