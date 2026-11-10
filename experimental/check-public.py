@@ -1,4 +1,4 @@
-import json, socket, ssl, urllib.request, urllib.error
+import hashlib, socket, ssl, urllib.request, urllib.error
 host = "remote.sandav.de"
 print("dns_ipv4", sorted({x[4][0] for x in socket.getaddrinfo(host, None, socket.AF_INET)}))
 for port in (31115, 31116, 31117):
@@ -22,8 +22,12 @@ for path, expected in [("/",200),("/api/login-options",200),("/api/ab",401),("/a
     try:
         with urllib.request.urlopen("https://"+host+path,timeout=10,context=ctx) as r:
             code=r.status
-            if path=="/": assert json.loads(r.read())["name"]=="rust-book"
+            if path=="/": assert b"Sandav Fernzugriff" in r.read()
     except urllib.error.HTTPError as e: code=e.code
     assert code==expected, (path,code,expected)
     print("https",path,code,"ok")
-print("PASS: external network, TLS, API authentication boundary and blocked admin")
+with urllib.request.urlopen("https://"+host+"/downloads/RustDeskLab-windows-x64.zip", timeout=30, context=ctx) as r:
+    digest=hashlib.file_digest(r,"sha256").hexdigest()
+assert digest=="8cb75d77a3606b0f0b9f0780a253a2cb1f9a5ea021b1e5981cba658ae7be1010", digest
+print("download_sha256",digest,"ok")
+print("PASS: public network, TLS, API authentication boundary, blocked admin and verified client download")
